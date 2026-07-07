@@ -20,7 +20,9 @@ _SUCCESS_STREAK_REQUIRED = 3
 def reset_connection_pool():
     """Force-closes the existing connection pool and builds a brand new one."""
     global _http_session
-    print("🚨 Connection degraded! 3 Server errors reached. Tearing down HTTP pool...")
+    print(
+        "\n🚨 Connection degraded! 3 Server errors reached. Tearing down HTTP pool..."
+    )
     try:
         _http_session.close()
     except Exception:
@@ -31,24 +33,19 @@ def reset_connection_pool():
 def record_server_error(status_code, attempt):
     """Logs a strike against the connection pool."""
     global _server_error_count, _success_count
-
     _server_error_count += 1
-    _success_count = 0  # Break any ongoing success streak
-
+    _success_count = 0
     print(
         f"⚠️ Google AI status {status_code} (Strike {_server_error_count}/{_ERROR_THRESHOLD}) [Attempt {attempt}]"
     )
-
     if _server_error_count >= _ERROR_THRESHOLD:
         reset_connection_pool()
-        _server_error_count = 0  # Reset the strike counter after taking action
+        _server_error_count = 0
 
 
 def record_success():
     """Builds a success streak to clear past strikes."""
     global _server_error_count, _success_count
-
-    # Only bother tracking successes if we actually have strikes against us
     if _server_error_count > 0:
         _success_count += 1
         if _success_count >= _SUCCESS_STREAK_REQUIRED:
@@ -57,6 +54,9 @@ def record_success():
             )
             _server_error_count = 0
             _success_count = 0
+
+
+# --------------------------------
 
 
 def create_error_response(error_message):
@@ -93,6 +93,7 @@ def get_safety_settings(model_name):
     ]
 
 
+# Restored your Gemma/Gemini compatible transform logic exactly
 def transform_janitor_to_google_ai(messages):
     if not messages or not isinstance(messages, list):
         return []
@@ -139,13 +140,20 @@ def create_janitor_chunk(content, model_name, finish_reason=None):
 
 def process_llm_request(json_data, api_key, is_streaming):
     global _http_session
+    # Safe fallback if DEBUG_MODE isn't in your config yet
+    debug_mode = getattr(Config, "DEBUG_MODE", True)
+
     try:
+        request_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        if debug_mode:
+            print(f"\n[{request_time}] Received request")
+
         # 1. Prefill Logic
         if Config.ENABLE_NSFW or Config.ENABLE_THINKING:
             messages = json_data.get("messages", [])
 
             if messages and messages[-1].get("role") == "user":
-                if Config.ENABLE_NSFW and Config.NSFW_PREFILL:
+                if Config.ENABLE_NSFW and getattr(Config, "NSFW_PREFILL", None):
                     messages.append({"content": Config.NSFW_PREFILL, "role": "system"})
                 if Config.ENABLE_THINKING:
                     messages.append(
@@ -163,7 +171,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                 existing_content = messages[-1].get("content", "")
                 last_assistant = messages.pop()
 
-                if Config.ENABLE_NSFW and Config.NSFW_PREFILL:
+                if Config.ENABLE_NSFW and getattr(Config, "NSFW_PREFILL", None):
                     messages.append({"content": Config.NSFW_PREFILL, "role": "system"})
                 if Config.ENABLE_THINKING:
                     messages.append(
@@ -173,7 +181,8 @@ def process_llm_request(json_data, api_key, is_streaming):
 
                 if existing_content.strip() and (
                     not Config.ENABLE_NSFW
-                    or existing_content.strip() != Config.NSFW_PREFILL.strip()
+                    or existing_content.strip()
+                    != getattr(Config, "NSFW_PREFILL", "").strip()
                 ):
                     messages.append(last_assistant)
 
@@ -192,11 +201,15 @@ def process_llm_request(json_data, api_key, is_streaming):
             if json_data.get("model") and json_data["model"] != "custom"
             else Config.MODEL
         )
+        if debug_mode:
+            print(f"Using model: {selected_model}")
+
         google_ai_contents = transform_janitor_to_google_ai(
             json_data.get("messages", [])
         )
 
         if not google_ai_contents:
+            print("Error: Invalid or empty message format received.")
             return jsonify(
                 create_error_response("Invalid or empty message format")
             ), 400
@@ -222,8 +235,19 @@ def process_llm_request(json_data, api_key, is_streaming):
             if json_data.get("presence_penalty") is not None:
                 generation_config["presencePenalty"] = json_data.get("presence_penalty")
 
-        if Config.ENABLE_GOOGLE_SEARCH:
+        if getattr(Config, "ENABLE_GOOGLE_SEARCH", False):
             google_ai_request["tools"] = [{"google_search": {}}]
+
+        # --- DIAGNOSTIC PAYLOAD LOGGING ---
+        if debug_mode:
+            print("\n" + "=" * 60)
+            print("🚀 OUTGOING PAYLOAD TO GOOGLE AI:")
+            try:
+                print(json.dumps(google_ai_request, indent=2, ensure_ascii=False))
+            except Exception as e:
+                print(f"Could not print payload: {e}")
+            print("=" * 60 + "\n")
+        # ----------------------------------
 
         endpoint = "streamGenerateContent" if is_streaming else "generateContent"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:{endpoint}?key={api_key}"
@@ -231,19 +255,25 @@ def process_llm_request(json_data, api_key, is_streaming):
             url += "&alt=sse"
 
         headers = {"Content-Type": "application/json"}
+        max_retries = 3
+        retry_delay = 1.5
 
-        # 3. Handle Streaming with Retry & Connection Reset Support
+        # 3. Handle Streaming
         if is_streaming:
 
             def generate_stream():
-                parser = StreamingParser(Config.DISPLAY_THINKING_IN_COLAB)
+                parser = StreamingParser(
+                    getattr(Config, "DISPLAY_THINKING_IN_COLAB", True)
+                )
                 response = None
-                max_retries = 3
-                retry_delay = 1.5
 
-                # Initial HTTP connection retry loop
+                # Initial Connection Retries
                 for attempt in range(1, max_retries + 1):
                     try:
+                        if debug_mode:
+                            print(
+                                f"Connecting to Google AI for streaming (Attempt {attempt}/{max_retries})..."
+                            )
                         response = _http_session.post(
                             url,
                             json=google_ai_request,
@@ -251,26 +281,23 @@ def process_llm_request(json_data, api_key, is_streaming):
                             stream=True,
                             timeout=Config.REQUEST_TIMEOUT_SECONDS,
                         )
-
-                        # If upstream hits a server error (500/503), trigger connection recovery
-                        if response.status_code in [500, 502, 503, 504]:
+                        if debug_mode:
                             print(
-                                f"⚠️ Google AI returned status {response.status_code} (Attempt {attempt}/{max_retries})"
+                                f"Google AI stream response status: {response.status_code}"
                             )
+
+                        if response.status_code in [500, 502, 503, 504]:
                             record_server_error(response.status_code, attempt)
                             if attempt < max_retries:
-                                time.sleep(retry_delay * attempt)  # Progressive backoff
+                                time.sleep(retry_delay * attempt)
                                 continue
 
-                        response.raise_for_status
+                        response.raise_for_status()
                         record_success()
-                        break  # Successfully connected, break out of retry loop
+                        break
 
                     except (requests.RequestException, Exception) as e:
-                        print(
-                            f"⚠️ Connection error on attempt {attempt}/{max_retries}: {str(e)}"
-                        )
-                        reset_connection_pool()
+                        record_server_error(500, attempt)
                         if attempt == max_retries:
                             yield create_error_stream_chunk(
                                 f"Proxy Connection failed after {max_retries} attempts: {str(e)}"
@@ -286,7 +313,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                     yield "data: [DONE]\n\n"
                     return
 
-                # Process the established data stream
+                # Process Stream
                 try:
                     has_sent_data = False
                     for chunk in response.iter_lines():
@@ -294,53 +321,115 @@ def process_llm_request(json_data, api_key, is_streaming):
                             continue
                         chunk_str = chunk.decode("utf-8")
 
+                        # --- AGGRESSIVE ERROR CATCHER ---
+                        if debug_mode and (
+                            "finishReason" in chunk_str or "error" in chunk_str
+                        ):
+                            print(f"\n🚨 RAW GOOGLE API INTERCEPT:\n{chunk_str}\n")
+                        # --------------------------------
+
                         if not chunk_str.startswith("data: "):
                             continue
                         data_str = chunk_str[len("data: ") :].strip()
                         if data_str == "[DONE]":
+                            if debug_mode:
+                                print("Stream finished ([DONE] received).")
                             yield "data: [DONE]\n\n"
                             break
 
-                        data = json.loads(data_str)
-                        if "error" in data:
-                            yield create_error_stream_chunk(
-                                f"Google AI Error: {data['error'].get('message')}"
-                            )
-                            yield "data: [DONE]\n\n"
-                            return
+                        try:
+                            data = json.loads(data_str)
 
-                        content_delta = ""
-                        finish_reason = None
-                        if "candidates" in data and data["candidates"]:
-                            candidate = data["candidates"][0]
-                            if (
-                                "content" in candidate
-                                and "parts" in candidate["content"]
-                            ):
-                                for part in candidate["content"]["parts"]:
-                                    if "text" in part:
-                                        content_delta += part["text"]
-                            finish_reason = candidate.get("finishReason")
+                            # --- DIAGNOSTIC ERROR REPORTING ---
+                            if debug_mode:
+                                if "promptFeedback" in data and data[
+                                    "promptFeedback"
+                                ].get("blockReason"):
+                                    print(
+                                        f"\n🚨 GOOGLE BLOCKED THE PROMPT! Reason: {data['promptFeedback']['blockReason']}"
+                                    )
+                                    if "safetyRatings" in data["promptFeedback"]:
+                                        print(
+                                            f"🚨 Details: {json.dumps(data['promptFeedback']['safetyRatings'])}"
+                                        )
 
-                        if not content_delta:
+                                if "candidates" in data and data["candidates"]:
+                                    cand = data["candidates"][0]
+                                    reason = cand.get("finishReason")
+                                    if reason and reason not in ["STOP", None]:
+                                        print(
+                                            f"\n🚨 GENERATION KILLED! Reason: {reason}"
+                                        )
+                                        if "safetyRatings" in cand:
+                                            print(
+                                                f"🚨 Safety Trigger: {json.dumps(cand['safetyRatings'])}"
+                                            )
+                            # ----------------------------------
+
+                            if "error" in data:
+                                err_msg = data["error"].get(
+                                    "message", "Unknown stream error"
+                                )
+                                print(f"Error in stream data: {err_msg}")
+                                yield create_error_stream_chunk(
+                                    f"Google AI Error: {err_msg}"
+                                )
+                                yield "data: [DONE]\n\n"
+                                return
+
+                            content_delta = ""
+                            finish_reason = None
+                            if "candidates" in data and data["candidates"]:
+                                candidate = data["candidates"][0]
+                                if (
+                                    "content" in candidate
+                                    and "parts" in candidate["content"]
+                                ):
+                                    for part in candidate["content"]["parts"]:
+                                        if "text" in part:
+                                            content_delta += part["text"]
+                                finish_reason = candidate.get("finishReason")
+
+                            if not content_delta:
+                                continue
+
+                            if Config.ENABLE_THINKING:
+                                content_to_send, thinking_for_colab, _ = (
+                                    parser.process_chunk(content_delta)
+                                )
+                                if (
+                                    debug_mode
+                                    and thinking_for_colab
+                                    and getattr(
+                                        Config, "DISPLAY_THINKING_IN_COLAB", True
+                                    )
+                                ):
+                                    print("\n" + "=" * 50)
+                                    print("THINKING PROCESS:")
+                                    print(thinking_for_colab)
+                                    print("=" * 50)
+                            else:
+                                content_to_send = content_delta
+
+                            if content_to_send:
+                                has_sent_data = True
+                                yield f"data: {json.dumps(create_janitor_chunk(content_to_send, selected_model, finish_reason))}\n\n"
+
+                        except json.JSONDecodeError as json_err:
+                            if debug_mode:
+                                print(f"Warning: Could not decode JSON: {json_err}")
                             continue
 
-                        if Config.ENABLE_THINKING:
-                            content_to_send, _, _ = parser.process_chunk(content_delta)
-                        else:
-                            content_to_send = content_delta
-
-                        if content_to_send:
-                            has_sent_data = True
-                            yield f"data: {json.dumps(create_janitor_chunk(content_to_send, selected_model, finish_reason))}\n\n"
-
                     if not has_sent_data:
+                        print("Warning: No content was sent to JanitorAI.")
                         yield create_error_stream_chunk(
                             "No content received from Google AI."
                         )
                         yield "data: [DONE]\n\n"
 
                 except Exception as e:
+                    print(f"Error during streaming: {e}")
+                    traceback.print_exc()
                     yield create_error_stream_chunk(
                         f"Error during streaming parsing: {e}"
                     )
@@ -353,12 +442,11 @@ def process_llm_request(json_data, api_key, is_streaming):
                 stream_with_context(generate_stream()), content_type="text/event-stream"
             )
 
-        # 4. Handle Non-Streaming with Retry Support
+        # 4. Handle Non-Streaming
         else:
-            max_retries = 3
-            retry_delay = 1.5
+            if debug_mode:
+                print("Sending request to Google AI (non-streaming)...")
             response = None
-
             for attempt in range(1, max_retries + 1):
                 try:
                     response = _http_session.post(
@@ -367,25 +455,30 @@ def process_llm_request(json_data, api_key, is_streaming):
                         headers=headers,
                         timeout=Config.REQUEST_TIMEOUT_SECONDS,
                     )
+                    if debug_mode:
+                        print(
+                            f"Google AI non-stream response status: {response.status_code}"
+                        )
+
                     if response.status_code in [500, 502, 503, 504]:
                         record_server_error(response.status_code, attempt)
                         if attempt < max_retries:
                             time.sleep(retry_delay * attempt)
                             continue
+
                     response.raise_for_status()
                     record_success()
                     break
                 except Exception as e:
-                    reset_connection_pool()
+                    record_server_error(500, attempt)
                     if attempt == max_retries:
                         return jsonify(
                             create_error_response(
-                                f"Google AI non-stream request failed after retries: {str(e)}"
+                                f"Google AI non-stream request failed: {str(e)}"
                             )
                         ), 500
                     time.sleep(retry_delay * attempt)
 
-            # 1. Guard against empty responses (e.g., max_retries = 0)
             if not response:
                 return jsonify(
                     create_error_response(
@@ -393,7 +486,6 @@ def process_llm_request(json_data, api_key, is_streaming):
                     )
                 ), 500
 
-            # 2. Guard against invalid JSON (e.g., HTML firewall intercepts)
             try:
                 google_response = response.json()
             except json.JSONDecodeError:
@@ -402,6 +494,26 @@ def process_llm_request(json_data, api_key, is_streaming):
                         "Google AI returned an invalid, non-JSON response."
                     )
                 ), 502
+
+            # Non-streaming autopsy builder
+            if not google_response.get("candidates") or not google_response[
+                "candidates"
+            ][0].get("content"):
+                finish_reason = google_response.get("candidates", [{}])[0].get(
+                    "finishReason", "UNKNOWN"
+                )
+                prompt_feedback = google_response.get("promptFeedback")
+                filter_msg = "No content received from Google AI."
+                if finish_reason != "STOP":
+                    filter_msg += f" Finish Reason: {finish_reason}."
+                if prompt_feedback and prompt_feedback.get("blockReason"):
+                    filter_msg += f" Block Reason: {prompt_feedback['blockReason']}."
+                    details = prompt_feedback.get("safetyRatings")
+                    if details:
+                        filter_msg += f" Details: {json.dumps(details)}"
+
+                print(f"Warning: {filter_msg}")
+                return jsonify(create_error_response(filter_msg)), 200
 
             candidate = google_response["candidates"][0]
             content = "".join(
@@ -428,5 +540,6 @@ def process_llm_request(json_data, api_key, is_streaming):
             return jsonify(janitor_response)
 
     except Exception as e:
+        print(f"Unexpected error in proxy handler: {str(e)}")
         traceback.print_exc()
         return jsonify(create_error_response(f"Proxy Internal Error: {str(e)}")), 500

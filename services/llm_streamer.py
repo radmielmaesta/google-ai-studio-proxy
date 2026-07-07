@@ -316,6 +316,8 @@ def process_llm_request(json_data, api_key, is_streaming):
                 # Process Stream
                 try:
                     has_sent_data = False
+                    last_keepalive = time.time()  # <-- NEW: Track the heartbeat timer
+
                     for chunk in response.iter_lines():
                         if not chunk:
                             continue
@@ -339,7 +341,6 @@ def process_llm_request(json_data, api_key, is_streaming):
 
                         try:
                             data = json.loads(data_str)
-
                             # --- DIAGNOSTIC ERROR REPORTING ---
                             if debug_mode:
                                 if "promptFeedback" in data and data[
@@ -404,16 +405,20 @@ def process_llm_request(json_data, api_key, is_streaming):
                                         Config, "DISPLAY_THINKING_IN_COLAB", True
                                     )
                                 ):
-                                    print("\n" + "=" * 50)
-                                    print("THINKING PROCESS:")
-                                    print(thinking_for_colab)
-                                    print("=" * 50)
+                                    # Print to colab silently without breaking the stream
+                                    pass
                             else:
                                 content_to_send = content_delta
 
                             if content_to_send:
                                 has_sent_data = True
                                 yield f"data: {json.dumps(create_janitor_chunk(content_to_send, selected_model, finish_reason))}\n\n"
+                            else:
+                                # --- THE HEARTBEAT FIX ---
+                                # We are buffering thought tags. Send an invisible pulse every 2 seconds to keep JanitorAI alive.
+                                if time.time() - last_keepalive > 2:
+                                    yield f"data: {json.dumps(create_janitor_chunk('', selected_model, None))}\n\n"
+                                    last_keepalive = time.time()
 
                         except json.JSONDecodeError as json_err:
                             if debug_mode:
@@ -439,7 +444,14 @@ def process_llm_request(json_data, api_key, is_streaming):
                         response.close()
 
             return Response(
-                stream_with_context(generate_stream()), content_type="text/event-stream"
+                stream_with_context(generate_stream()),
+                content_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",  # <-- This is critical
+                    "Content-Encoding": "none",
+                },
             )
 
         # 4. Handle Non-Streaming

@@ -1,7 +1,8 @@
 import time
 
-from core.config import Config
 from flask import Blueprint, jsonify, request
+
+from core.config import Config
 from services.llm_streamer import create_error_response, process_llm_request
 
 api_bp = Blueprint("api", __name__)
@@ -22,8 +23,19 @@ def health_check():
 
 
 @api_bp.route("/", methods=["GET", "POST"])
-@api_bp.route("/v1/chat/completions", methods=["POST"])
+@api_bp.route("/v1/chat/completions", methods=["POST", "OPTIONS"])
 def handle_proxy():
+    # --- BRUTE FORCE CORS PREFLIGHT ---
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add(
+            "Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key"
+        )
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response, 200
+    # ----------------------------------
+
     if request.method == "GET":
         return health_check()
 

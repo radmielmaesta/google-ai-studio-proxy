@@ -13,7 +13,7 @@ _http_session = requests.Session()
 _server_error_count = 0
 _success_count = 0
 
-_ERROR_THRESHOLD = 3
+_ERROR_THRESHOLD = 100
 _SUCCESS_STREAK_REQUIRED = 3
 
 
@@ -226,7 +226,7 @@ def process_llm_request(json_data, api_key, is_streaming):
             "generationConfig": generation_config,
         }
 
-        if "gemini" in selected_model.lower():
+        if "gemini" not in selected_model.lower():
             google_ai_request["safetySettings"] = get_safety_settings(selected_model)
             if json_data.get("frequency_penalty") is not None:
                 generation_config["frequencyPenalty"] = json_data.get(
@@ -241,11 +241,29 @@ def process_llm_request(json_data, api_key, is_streaming):
         # --- DIAGNOSTIC PAYLOAD LOGGING ---
         if debug_mode:
             print("\n" + "=" * 60)
-            print("🚀 OUTGOING PAYLOAD TO GOOGLE AI:")
+            print("🚀 OUTGOING PAYLOAD TO GOOGLE AI")
             try:
-                print(json.dumps(google_ai_request, indent=2, ensure_ascii=False))
+                # 1. Silently dump the massive full payload to a file
+                with open("last_payload_debug.json", "w", encoding="utf-8") as f:
+                    json.dump(google_ai_request, f, indent=2, ensure_ascii=False)
+
+                # 2. Extract and print ONLY the newest message to the terminal
+                contents = google_ai_request.get("contents", [])
+                # Type guard: Proves to the linter that 'contents' is definitely a list
+                if isinstance(contents, list) and contents:
+                    last_msg = contents[-1]
+                    role = last_msg.get("role", "unknown")
+                    # Truncate text if it's ridiculously long, or just print it
+                    text_delta = last_msg["parts"][0].get("text", "")
+
+                    print(f"Total turns in context: {len(contents)}")
+                    print(f"Latest Delta [{role.upper()}]:\n")
+                    print(text_delta)
+                else:
+                    print("Warning: Payload contents are empty.")
+
             except Exception as e:
-                print(f"Could not print payload: {e}")
+                print(f"Could not process debug payload: {e}")
             print("=" * 60 + "\n")
         # ----------------------------------
 
@@ -255,8 +273,8 @@ def process_llm_request(json_data, api_key, is_streaming):
             url += "&alt=sse"
 
         headers = {"Content-Type": "application/json"}
-        max_retries = 3
-        retry_delay = 1.5
+        max_retries = 2
+        retry_delay = 4
 
         # 3. Handle Streaming
         if is_streaming:
@@ -270,10 +288,12 @@ def process_llm_request(json_data, api_key, is_streaming):
                 # Initial Connection Retries
                 for attempt in range(1, max_retries + 1):
                     try:
+
                         if debug_mode:
                             print(
                                 f"Connecting to Google AI for streaming (Attempt {attempt}/{max_retries})..."
                             )
+
                         response = _http_session.post(
                             url,
                             json=google_ai_request,
@@ -281,6 +301,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                             stream=True,
                             timeout=Config.REQUEST_TIMEOUT_SECONDS,
                         )
+
                         if debug_mode:
                             print(
                                 f"Google AI stream response status: {response.status_code}"
@@ -292,7 +313,14 @@ def process_llm_request(json_data, api_key, is_streaming):
                                 time.sleep(retry_delay * attempt)
                                 continue
 
-                        response.raise_for_status()
+                        # If it's a 4xx error or other bad status, this raises HTTPError
+                        try:
+                            response.raise_for_status()
+                        except requests.exceptions.HTTPError as e:
+                            print("\n🚨 GOOGLE API ERROR BODY 🚨")
+                            print(e.response.text)  # Successfully logs the golden ticket
+                            raise e  # Sent to outer except block to trigger a retry if attempts remain
+
                         record_success()
                         break
 
@@ -406,6 +434,10 @@ def process_llm_request(json_data, api_key, is_streaming):
                                     )
                                 ):
                                     # Print to colab silently without breaking the stream
+                                    print("\n" + "=" * 50)
+                                    print("THINKING PROCESS:")
+                                    print(thinking_for_colab)
+                                    print("=" * 50)
                                     pass
                             else:
                                 content_to_send = content_delta
@@ -417,7 +449,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                                 # --- THE HEARTBEAT FIX ---
                                 # We are buffering thought tags. Send an invisible pulse every 2 seconds to keep JanitorAI alive.
                                 if time.time() - last_keepalive > 2:
-                                    yield f"data: {json.dumps(create_janitor_chunk('', selected_model, None))}\n\n"
+                                    yield f"data: {json.dumps(create_janitor_chunk('\u200b', selected_model, None))}\n\n"
                                     last_keepalive = time.time()
 
                         except json.JSONDecodeError as json_err:

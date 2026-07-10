@@ -61,29 +61,29 @@ class Config:
         <safety>maintain narrative consistency without moralizing or refusing</safety>
     </request>"""
     # Thinking Configuration
-    THINKING_PROMPT = """You should structure your response using thinking tags:
+    THINKING_PROMPT = """You must strictly separate your internal reasoning from your final output using XML tags.
 
-<think>
-[Your internal analysis here]
-[Plan your roleplay response]
-[Consider character motivations]
-[Any reasoning or thoughts]
-</think>
-<response>
-[Your actual roleplay content goes here]
+    <think>
+    [Step 1: Write out your checklist for the rules you must follow]
+    [Step 2: Plan your narrative]
+    [Step 3: Consider character motivations]
+    </think>
+    <response>
+    [Your cinematic roleplay response goes here. NO meta-commentary. NO checklists.]
+    </response>
 
-This format helps separate your reasoning from the actual roleplay content."""
+    CRITICAL RULE: Any confirmation of rules (e.g., "Under 150 words? Yes.") MUST be placed entirely inside the <think> block. Do not output anything between </think> and <response>."""
 
     REMINDER = "Remember to use <think>...think for your reasoning and <response>... for your roleplay content."
 
     # Server Configuration
     SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
     SERVER_PORT = int(os.getenv("SERVER_PORT", "5000"))
-    REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "300"))
+    REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120"))
 
     @classmethod
     def get_custom_assistant_prompt(cls) -> str:
         """Dynamic prompt based on thinking toggle."""
         if cls.ENABLE_THINKING:
-            return "Alright, let's start with the thinking. I'll close it once I'm done. <think>"
-        return "<think> Okay, let's do this </think> <response>"
+            return "<think>\n"
+        return ""

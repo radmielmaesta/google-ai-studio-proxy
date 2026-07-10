@@ -24,6 +24,9 @@ app.register_blueprint(api_bp)
 tunnel_process = None
 
 
+import shutil  # <-- Add this import at the top of your file
+
+
 def start_tunnel(port):
     """Auto-downloads cloudflared if missing, starts it, and prints the URL."""
     global tunnel_process
@@ -32,42 +35,59 @@ def start_tunnel(port):
     if provider != "cloudflare":
         return None
 
-    binary_name = "cloudflared"
-    # Check if cloudflared is installed globally
-    is_installed = (
-        subprocess.call(
-            ["which", binary_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        == 0
-    )
+    # Detect OS environment
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    is_windows = system == "windows"
+
+    # Define binary name correctly per OS
+    binary_name = "cloudflared.exe" if is_windows else "cloudflared"
+
+    # Check if cloudflared is installed globally using cross-platform Python native tool
+    is_installed = shutil.which(binary_name) is not None
 
     if not is_installed:
-        local_binary = "./cloudflared"
+        # Crucial fix: Separate the filename string clean across OS platforms
+        local_binary = f"./{binary_name}"
+
         # Check if we already downloaded it locally
-        if not os.path.exists(local_binary):
-            print("ℹ️  'cloudflared' not found. Auto-downloading locally...")
-            system = platform.system().lower()
-            machine = platform.machine().lower()
+        if not is_installed:
+            local_binary = f"./{binary_name}"
 
-            if system == "linux" and "x86_64" in machine:
-                url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-            elif system == "linux" and "aarch64" in machine:
-                url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
-            elif system == "darwin":
-                url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz"
-            else:
-                print(f"⚠️ Unsupported system for auto-download: {system} {machine}")
-                return None
+            if not os.path.exists(local_binary):
+                print(f"ℹ️  '{binary_name}' not found. Auto-downloading locally...")
 
-            try:
-                urllib.request.urlretrieve(url, local_binary)
-                os.chmod(local_binary, 0o755)
-                print("✅ Downloaded cloudflared successfully.")
-            except Exception as e:
-                print(f"⚠️ Failed to download cloudflared: {e}")
-                return None
+                # Restore the actual binary distribution payloads
+                base_url = "https://github.com/cloudflare/cloudflared/releases/latest/download"
+                if system == "linux" and "x86_64" in machine:
+                    url = f"{base_url}/cloudflared-linux-amd64"
+                elif system == "linux" and "aarch64" in machine:
+                    url = f"{base_url}/cloudflared-linux-arm64"
+                elif system == "darwin":
+                    url = f"{base_url}/cloudflared-darwin-amd64.tgz"
+                elif is_windows:
+                    url = f"{base_url}/cloudflared-windows-amd64.exe"
+                else:
+                    print(f"⚠️ Unsupported system for auto-download: {system} {machine}")
+                    return None
 
-        binary_name = local_binary
+                try:
+                    # Cleaner streaming context: uses a minimalist browser signature bypass
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    
+                    with urllib.request.urlopen(req) as response, open(local_binary, "wb") as out_file:
+                        shutil.copyfileobj(response, out_file)
+
+                    if not is_windows:
+                        os.chmod(local_binary, 0o755)
+                    print(f"✅ Downloaded {binary_name} successfully.")
+                except Exception as e:
+                    print(f"⚠️ Failed to download cloudflared: {e}")
+                    if os.path.exists(local_binary):
+                        os.remove(local_binary)
+                    return None
+
+            binary_name = local_binary
 
     try:
         # Start cloudflared directly
@@ -76,20 +96,42 @@ def start_tunnel(port):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            # Force Windows to flush text immediately instead of buffering
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW if system == "windows" else 0
+            ),
         )
 
         print("⏳ Waiting for Cloudflare Tunnel URL...")
-        # Read output line-by-line to find the generated URL
-        for line in iter(tunnel_process.stdout.readline, ""):
-            if "trycloudflare.com" in line:
-                match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
-                if match:
-                    return match.group(0)
 
-        # If the loop ends without returning, something went wrong with cloudflared
-        print("⚠️ Failed to capture Tunnel URL. Output:")
+        # We read characters instead of whole buffered lines to bypass Windows stream traps
+        buffer = ""
+        while True:
+            # Check if process died early
+            if tunnel_process.poll() is not None:
+                break
+
+            char = tunnel_process.stdout.read(1)
+            if not char:
+                break
+
+            buffer += char
+            if "\n" in buffer:
+                line = buffer.strip()
+                buffer = ""  # Reset loop buffer
+
+                if "trycloudflare.com" in line:
+                    match = re.search(
+                        r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line
+                    )
+                    if match:
+                        return match.group(0)
+
+        # If the loop ends without returning, something went wrong
+        print("⚠️ Failed to capture Tunnel URL.")
         tunnel_process.terminate()
         return None
+
     except Exception as e:
         print(f"⚠️ Tunnel failed: {e}")
         return None

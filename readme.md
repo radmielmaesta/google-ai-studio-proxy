@@ -1,94 +1,88 @@
-Proposed Folder Structure
+🤖 Google AI to JanitorAI Proxy
+This is a lightweight bridge that allows you to use Google's powerful Gemini AI models (like Gemini 3.5 Flash and Gemini 1.5 Pro) completely free in JanitorAI.
 
-google-ai-proxy/
-├── routers/
-│   ├── __init__.py
-│   └── proxy_router.py
-├── services/
-│   ├── __init__.py
-│   ├── google_ai_service.py
-│   └── message_transform_service.py
-├── utils/
-│   ├── __init__.py
-│   ├── response_utils.py
-│   └── streaming_utils.py
-├── config.py
-└── main.py
+It features built-in formatting for roleplay, bypasses for creative/unfiltered narratives, and support for Gemini's "Thinking" process to make the AI smarter.
 
-my_ai_proxy/
-├── main.py                 # The entry point (starts the server)
-├── core/                   
-│   └── config.py           # Environment variables and API keys
-├── api/                    
-│   └── routes.py           # The @app.route endpoints
-├── services/               
-│   └── llm_streamer.py     # The connection retry loops and API calls
-├── utils/                  
-│   └── text_parser.py      # The <think> tag extraction logic
-└── models/                 
-    └── schemas.py          # Data validation for the incoming JanitorAI payload
+🛠️ What You Need Before Starting
+A Google AI Studio API Key: Get one for free at Google AI Studio.
 
-How to prompt the Agent for success
-If you are going to use an agent to build this out, do not ask it to do the whole thing in one single prompt. That is how you get truncated code and broken imports. Break it down like a project manager:
+Python: You need Python installed on your computer.
 
-Prompt 1 (The Blueprint): "Here is my monolithic Python script. I want to refactor this into a 3-tier architecture (Routers, Services, Utils). Do not write the code yet. Just give me the proposed folder structure and tell me exactly which functions from the monolith will go into which file."
+🚀 Step 1: Install Python (Crucial Step)
+For Windows Users:
 
-Prompt 2 (The Config): "Great. Now write the core/config.py file to handle all the global variables and settings."
+Download Python from python.org.
 
-Prompt 3 (The Utils): "Now write utils/text_parser.py using the parser class from the monolith."
+Open the installer.
 
-Prompt 4 (The Services): "Now write services/llm_streamer.py. Make sure you import the config and the text parser correctly."
+⚠️ STOP! DO NOT CLICK NEXT YET! At the very bottom of the first window, check the box that says "Add Python.exe to PATH". (If you skip this, nothing will work).
 
-Prompt 5 (The Router): "Finally, write api/routes.py and main.py to tie it all together."
+Click "Install Now".
 
-By forcing the agent to do it sequentially, you are practicing actual AI orchestration. You provide the architectural guardrails, and the agent acts as a junior developer doing the manual copy-pasting and formatting.
+For Mac Users:
+Open your "Terminal" app and type python3 --version. If it asks you to install developer tools, say yes. Otherwise, download the Mac installer from python.org.
 
+📥 Step 2: Download and Setup
+Download this code: Click the green Code button at the top of this GitHub page and select Download ZIP. Extract the folder to your Desktop.
 
-Prompt 1: The Reset & The Parser
-"I am refactoring the attached Python proxy script into a lean 3-tier architecture.
-We already have core/config.py completed.
+Open your Terminal (or Command Prompt):
 
-Write the code for utils/text_parser.py.
+Windows: Press the Windows Key, type cmd, and press Enter.
 
-Extract the StreamingParser class and the extract_thinking_and_response function from the original script and put them here.
+Mac/Linux: Open the Terminal app.
 
-Do not change the lenient parsing logic. Keep it exactly as it is.
+Navigate to the folder: Type cd followed by a space, then drag and drop the extracted folder from your desktop into the terminal window and press Enter.
+(It should look something like: cd C:\Users\Name\Desktop\google-ai-proxy)
 
-Output only the complete Python code for this file."
+Install the requirements: Type the following command and press Enter to install the necessary background files:
 
-Prompt 2: The Core Engine
-"Now write the code for services/llm_streamer.py.
+Bash
+pip install -r requirements.txt
+(Mac/Linux users: If that fails, try pip3 install -r requirements.txt)
 
-Extract the transform_janitor_to_google_ai, create_janitor_chunk, create_error_response, and create_error_stream_chunk functions here.
+⚙️ Step 3: Configuration
+You can customize how the bot acts by editing the config file.
 
-Extract the core API call logic (the generate_stream function and the non-streaming logic) into a single function called process_llm_request(json_data, is_streaming).
+Open the core folder and find the config.py file.
 
-Import the StreamingParser from utils.text_parser.
+Right-click it and open it with Notepad (Windows) or TextEdit (Mac).
 
-Import Config from core.config.
+Here you can change settings like:
 
-Output only the complete Python code for this file."
+MODEL = "gemini-3.5-flash" (Change which AI model you want to use).
 
-Prompt 3: The Traffic Cop
-"Now write api/routes.py.
+ENABLE_NSFW = True (Keeps the creative writing filters lenient).
 
-Set up a Blueprint or standard Flask routes for / and /v1/chat/completions.
+ENABLE_THINKING = True (Allows the AI to reason before speaking).
 
-This file should ONLY handle the HTTP request headers, extract the API key, and pass the JSON payload to the process_llm_request function we just made in the services file.
+Save the file and close it.
 
-Import process_llm_request from services.llm_streamer.
+▶️ Step 4: Run the Proxy
+In your terminal (make sure you are still in the proxy folder), type:
 
-Include the /health check endpoint here.
+Bash
+python main.py
+(Mac/Linux users: Try python3 main.py)
 
-Output only the complete Python code for this file."
+You will see the server boot up. Because this proxy has built-in Cloudflare tunneling, you do not need to mess with router settings.
 
-Prompt 4: The Start Button
-"Finally, write main.py.
+Look at your terminal screen. After a few seconds, it will print a link that looks like this:
 
-Initialize the Flask app and CORS.
+[https://random-words-here.trycloudflare.com](https://random-words-here.trycloudflare.com)
 
-Import and register the routes from api.routes.
+Copy that entire link. Leave this terminal window open and running in the background while you roleplay!
 
-Include the Cloudflare/Localtunnel setup logic at the bottom so it runs exactly like the original Colab script.
+🔗 Step 5: Connect to JanitorAI
+Open JanitorAI and go to any character chat.
 
-Output only the complete Python code for this file."
+Click the API Settings button (the little plug/hamburger menu at the top right).
+
+Select OpenAI as your API type.
+
+OpenAI URL: Paste your Cloudflare link here (e.g., [https://random-words-here.trycloudflare.com/v1/chat/completions](https://random-words-here.trycloudflare.com/v1/chat/completions)). Note: JanitorAI usually adds /v1/chat/completions automatically, but if it doesn't, add it yourself.
+
+OpenAI Key: Paste your Google AI Studio API Key here.
+
+Click Check Proxy. If it says valid, click Save Settings.
+
+You are ready to chat!

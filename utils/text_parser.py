@@ -79,19 +79,13 @@ class StreamingParser:
         self.display_thinking_in_colab = display_thinking_in_colab
 
     def reset(self):
-        self.state = "searching"  # States: "searching", "found_think_end", "in_response", "finished"
+        self.state = "searching"
         self.thinking_content = ""
         self.response_content = ""
         self.buffer = ""
-        self.all_content = ""  # Keep track of all content
-        self.think_end_sent = False  # Track if we've sent </think>
+        self.all_content = ""
 
     def process_chunk(self, chunk_content):
-        """
-        Process a chunk with lenient tag detection.
-        Keeps </think> and <response> tags in the output.
-        Returns: (content_to_send, thinking_for_colab, is_complete)
-        """
         self.buffer += chunk_content
         self.all_content += chunk_content
         content_to_send = ""
@@ -99,14 +93,13 @@ class StreamingParser:
 
         while True:
             if self.state == "searching":
-                # Look for </think> as our first marker
+                # STRICT LOCKDOWN: We are inside the thought.
+                # Ignore everything except </think>. Do not fall for fake <response> tags in the checklist!
                 if "</think>" in self.buffer:
                     parts = self.buffer.split("</think>", 1)
-                    # Everything before </think> is thinking
-                    thinking_part = self.all_content[
-                        : self.all_content.find("</think>")
-                    ]
-                    # Remove <think> if present
+
+                    # Extract the thinking part for the terminal
+                    thinking_part = self.all_content[: self.all_content.find("</think>")]
                     if "<think>" in thinking_part:
                         thinking_part = thinking_part.split("<think>", 1)[1]
                     self.thinking_content = thinking_part.strip()
@@ -114,57 +107,48 @@ class StreamingParser:
                     if self.display_thinking_in_colab:
                         thinking_for_colab = self.thinking_content
 
-                    # Keep </think> in buffer to send it
-                    self.buffer = "</think>" + parts[1]
-                    self.state = "found_think_end"
+                    # Drop </think> and move into the Airlock
+                    self.buffer = parts[1]
+                    self.state = "waiting_for_response"
                     continue
-                elif "<response>" in self.buffer:
-                    # Found <response> without </think>
+                else:
+                    # Eat the text. Send absolutely nothing to JanitorAI.
+                    break
+
+            elif self.state == "waiting_for_response":
+                # AIRLOCK: Now we actively look for the real <response> tag to delete it.
+                if "<response>" in self.buffer:
                     parts = self.buffer.split("<response>", 1)
-                    # Everything before <response> is thinking
-                    thinking_part = self.all_content[
-                        : self.all_content.find("<response>")
-                    ]
-                    # Remove <think> if present
-                    if "<think>" in thinking_part:
-                        thinking_part = thinking_part.split("<think>", 1)[1]
-                    self.thinking_content = thinking_part.strip()
-
-                    if self.display_thinking_in_colab:
-                        thinking_for_colab = self.thinking_content
-
-                    # Keep <response> in buffer to send it
-                    self.buffer = "<response>" + parts[1]
+                    self.buffer = parts[1]
+                    self.state = "in_response"
+                    continue
+                elif len(self.buffer) > 40:
+                    # If 40 chars pass without a response tag, it forgot. Open the gates.
+                    self.buffer = self.buffer.replace("<response>", "").replace("<respon", "")
                     self.state = "in_response"
                     continue
                 else:
-                    # Keep buffering
                     break
 
-            elif self.state == "found_think_end":
-                # Send </think> and everything after
-                content_to_send = self.buffer
-                self.response_content += self.buffer
-                self.buffer = ""
-                self.state = "in_response"
-                break
-
             elif self.state == "in_response":
-                # Send everything as response
-                content_to_send = self.buffer
-                self.response_content += self.buffer
-                self.buffer = ""
-
-                # Check if we've reached the end
-                if "</response>" in self.response_content:
+                # Gates are open. Send the pure story to JanitorAI.
+                if "</response>" in self.buffer:
+                    parts = self.buffer.split("</response>", 1)
+                    content_to_send = parts[0]
+                    self.response_content += parts[0]
+                    self.buffer = ""
                     self.state = "finished"
+                else:
+                    content_to_send = self.buffer
+                    self.response_content += self.buffer
+                    self.buffer = ""
                 break
 
             elif self.state == "finished":
-                # We've processed the main content
-                # Discard any remaining buffer content
                 self.buffer = ""
                 break
 
+        is_complete = self.state == "finished"
+        return content_to_send, thinking_for_colab, is_complete
         is_complete = self.state == "finished"
         return content_to_send, thinking_for_colab, is_complete

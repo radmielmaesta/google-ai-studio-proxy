@@ -4,8 +4,10 @@ A lightweight, cross-platform proxy designed to connect Google AI Studio models 
 
 ## Prerequisites
 * **Google Studio API Key:** Required to access the models.
-* **Python:** * **Windows:** Python 3.12 recommended.
+* **Python:**
+  * **Windows:** Python 3.12 recommended.
   * **Linux / Mac:** Recent Python 3 distributions (3.10+).
+  * Just make sure to check the "Add Python to PATH" box at the very bottom of the installer window before clicking "Install Now," otherwise Python will have to be added to PATH manually.
 
 ---
 
@@ -28,14 +30,17 @@ A lightweight, cross-platform proxy designed to connect Google AI Studio models 
 
 ### Step 2: Create a Virtual Environment
 A virtual environment keeps the required packages isolated from your system.
+The first command will create the virtual environment as a file named 'venv '.
+The second will activate the virtual environment. 
+You'll see a **(venv)** at the beginning of the command line if activated properly.
 
-**Windows (PowerShell or CMD):**
-`python -m venv venv`
-`.\venv\Scripts\activate`
+**Windows (PowerShell or CMD):**  
+1. `python -m venv venv`  
+2. `.\venv\Scripts\activate`
 
-**Linux / Mac (Bash/Zsh):**
-`python3 -m venv venv`
-`source venv/bin/activate`
+**Linux / Mac (Bash/Zsh):**  
+1. `python3 -m venv venv`  
+2. `source venv/bin/activate`
 
 *(Note: You will know it worked when you see `(venv)` appear at the beginning of your command line prompt.)*
 
@@ -67,8 +72,8 @@ The proxy is pre-configured and ready to run immediately.
 ## 3. Connecting to Janitor AI
 
 1. Open **Janitor AI** and navigate to your API settings.
-2. Select **OpenAI** as the API type.
-3. **OpenAI URL:** Paste the Cloudflare URL generated in your terminal.
+2. Select **Proxy** as the API type.
+3. **API URL:** Paste the Cloudflare URL generated in your terminal.
    * *CRITICAL:* Do **NOT** add `/chat/completions` or `/v1/chat/completions` to the end of the URL. Use the base link exactly as copied.
 4. **API Key:** Paste your Google Studio API Key.
 5. **Model:** Enter your desired model name (e.g., `gemma-4-31b-it`).
@@ -78,7 +83,7 @@ The proxy is pre-configured and ready to run immediately.
 
 ## Advanced Configuration (config.py)
 
-If you wish to modify the default behavior, open the `core/config.py` file in any text editor. The variables are loaded automatically upon saving.
+If you wish to modify the default behaviour, open the `core/config.py` file in any text editor. The variables are loaded automatically upon saving.
 
 ### Primary Settings
 * `MODEL`: Set your default model here (currently defaults to `gemma-4-31b-it`).
@@ -91,7 +96,7 @@ If you wish to modify the default behavior, open the `core/config.py` file in an
   * *Troubleshooting:* If Google continuously halts generation and you see PROHIBITED warnings in your terminal, toggle this to False to restore basic chatting functionality.
   
 * `ENABLE_THINKING` (Default: True)
-  * Allows models to utilize internal reasoning before responding.
+  * Allows models to utilise internal reasoning before responding.
   * *Warning:* Disabling this setting may result in empty or broken outputs depending on the model's architecture. It is highly recommended to leave this enabled.
 
 * `DISPLAY_THINKING_IN_COLAB` (Default: True)

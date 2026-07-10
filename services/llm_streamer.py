@@ -224,16 +224,17 @@ def process_llm_request(json_data, api_key, is_streaming):
         google_ai_request = {
             "contents": google_ai_contents,
             "generationConfig": generation_config,
+            "safetySettings": get_safety_settings(selected_model),
         }
 
-        if "gemini" not in selected_model.lower():
-            google_ai_request["safetySettings"] = get_safety_settings(selected_model)
-            if json_data.get("frequency_penalty") is not None:
-                generation_config["frequencyPenalty"] = json_data.get(
-                    "frequency_penalty"
-                )
-            if json_data.get("presence_penalty") is not None:
-                generation_config["presencePenalty"] = json_data.get("presence_penalty")
+        # if "gemini" in selected_model.lower():
+        #     google_ai_request["safetySettings"] = get_safety_settings(selected_model)
+        #     if json_data.get("frequency_penalty") is not None:
+        #         generation_config["frequencyPenalty"] = json_data.get(
+        #             "frequency_penalty"
+        #         )
+        #     if json_data.get("presence_penalty") is not None:
+        #         generation_config["presencePenalty"] = json_data.get("presence_penalty")
 
         if getattr(Config, "ENABLE_GOOGLE_SEARCH", False):
             google_ai_request["tools"] = [{"google_search": {}}]
@@ -273,7 +274,7 @@ def process_llm_request(json_data, api_key, is_streaming):
             url += "&alt=sse"
 
         headers = {"Content-Type": "application/json"}
-        max_retries = 2
+        max_retries = 1
         retry_delay = 4
 
         # 3. Handle Streaming

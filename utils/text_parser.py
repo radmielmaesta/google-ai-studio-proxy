@@ -79,7 +79,8 @@ class StreamingParser:
         self.display_thinking_in_colab = display_thinking_in_colab
 
     def reset(self):
-        self.state = "searching"
+        # Start in a detection phase, NOT immediate lockdown
+        self.state = "detecting"
         self.thinking_content = ""
         self.response_content = ""
         self.buffer = ""
@@ -92,14 +93,31 @@ class StreamingParser:
         thinking_for_colab = ""
 
         while True:
-            if self.state == "searching":
-                # STRICT LOCKDOWN: We are inside the thought.
-                # Ignore everything except </think>. Do not fall for fake <response> tags in the checklist!
+            if self.state == "detecting":
+                if "<think>" in self.buffer:
+                    # Explicit tags detected, go into strict lockdown
+                    self.state = "searching"
+                    continue
+                elif len(self.buffer) > 15:
+                    # 15 chars passed with no <think> tag.
+                    # The model is using native thoughtSignature. Open the gates!
+                    self.buffer = self.buffer.replace("<response>", "").replace(
+                        "<respon", ""
+                    )
+                    self.state = "in_response"
+                    continue
+                else:
+                    break
+
+            elif self.state == "searching":
+                # STRICT LOCKDOWN: We are inside the explicit thought.
                 if "</think>" in self.buffer:
                     parts = self.buffer.split("</think>", 1)
 
                     # Extract the thinking part for the terminal
-                    thinking_part = self.all_content[: self.all_content.find("</think>")]
+                    thinking_part = self.all_content[
+                        : self.all_content.find("</think>")
+                    ]
                     if "<think>" in thinking_part:
                         thinking_part = thinking_part.split("<think>", 1)[1]
                     self.thinking_content = thinking_part.strip()
@@ -124,7 +142,9 @@ class StreamingParser:
                     continue
                 elif len(self.buffer) > 40:
                     # If 40 chars pass without a response tag, it forgot. Open the gates.
-                    self.buffer = self.buffer.replace("<response>", "").replace("<respon", "")
+                    self.buffer = self.buffer.replace("<response>", "").replace(
+                        "<respon", ""
+                    )
                     self.state = "in_response"
                     continue
                 else:

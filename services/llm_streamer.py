@@ -261,9 +261,15 @@ def process_llm_request(json_data, api_key, is_streaming):
 
         # Conditionally inject thinking config based on the model series
         if "gemini-3" in selected_model or "gemma-4" in selected_model:
-            generation_config["thinkingConfig"] = {"thinkingLevel": "high"}
+            generation_config["thinkingConfig"] = {
+                "thinkingLevel": Config.THINKING_LEVEL,
+                "includeThoughts": True,
+            }
         elif "gemini-2.5" in selected_model:
-            generation_config["thinkingConfig"] = {"thinkingBudget": -1}
+            generation_config["thinkingConfig"] = {
+                "thinkingBudget": Config.THINKING_BUDGET,
+                "includeThoughts": True,
+            }
 
         google_ai_request = {
             "contents": google_ai_contents,
@@ -465,6 +471,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                                 return
 
                             content_delta = ""
+                            thought_delta = ""
                             finish_reason = None
                             if "candidates" in data and data["candidates"]:
                                 candidate = data["candidates"][0]
@@ -474,11 +481,24 @@ def process_llm_request(json_data, api_key, is_streaming):
                                 ):
                                     for part in candidate["content"]["parts"]:
                                         if "text" in part:
-                                            content_delta += part["text"]
+                                            if part.get("thought"):
+                                                thought_delta += part["text"]
+                                            else:
+                                                content_delta += part["text"]
                                 finish_reason = candidate.get("finishReason")
 
                             if not content_delta and not finish_reason:
                                 continue
+
+                            if (
+                                debug_mode
+                                and thought_delta
+                                and getattr(Config, "DISPLAY_THINKING_IN_COLAB", True)
+                            ):
+                                print("\n" + "=" * 50)
+                                print("THINKING PROCESS:")
+                                print(thought_delta)
+                                print("=" * 50)
 
                             if Config.ENABLE_THINKING:
                                 content_to_send, thinking_for_colab, _ = (

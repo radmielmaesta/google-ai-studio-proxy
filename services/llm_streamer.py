@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import traceback
 
@@ -93,6 +94,79 @@ def get_safety_settings(model_name):
     ]
 
 
+# --- NEW: PURE PIPELINE TRANSFORMATION ---
+def build_gemini_payload(messages):
+    """
+    Extracts system components for the root instruction, enforces strict
+    role alternation, and anchors constraints safely to the final user turn.
+    """
+    if not messages or not isinstance(messages, list):
+        return [], None
+
+    system_instructions = []
+    clean_history = []
+
+    # 1. Extract System Context & Flatten History
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "").strip()
+
+        if not content:
+            continue
+
+        if role == "system":
+            system_instructions.append(f"[System/Context]:\n{content}")
+        elif role in ["user", "assistant"]:
+            google_role = "user" if role == "user" else "model"
+
+            # Collapse back-to-back duplicate roles to prevent 400 Bad Request
+            if clean_history and clean_history[-1]["role"] == google_role:
+                clean_history[-1]["parts"][0]["text"] += f"\n\n{content}"
+            else:
+                clean_history.append(
+                    {"role": google_role, "parts": [{"text": content}]}
+                )
+
+    # 2. Add Proxy-Level System Instructions (Thinking rules, etc.)
+    if getattr(Config, "ENABLE_THINKING", False) and getattr(
+        Config, "THINKING_PROMPT", ""
+    ):
+        system_instructions.append(f"[Core Instructions]:\n{Config.THINKING_PROMPT}")
+
+    # Format the final root SystemInstruction payload
+    system_instruction_text = "\n\n---\n\n".join(system_instructions)
+    system_instruction_payload = (
+        {"role": "system", "parts": [{"text": system_instruction_text}]}
+        if system_instruction_text
+        else None
+    )
+
+    # 3. Anchor Dynamic Constraints to the Final User Turn (Zero Token Decay)
+    constraint_text = ""
+    if getattr(Config, "ENABLE_NSFW", False) and getattr(Config, "NSFW_PREFILL", ""):
+        constraint_text += f"\n\n[SYSTEM REMINDER: {Config.NSFW_PREFILL}]"
+
+    if getattr(Config, "ENABLE_THINKING", False) and getattr(Config, "REMINDER", ""):
+        constraint_text += f"\n\n{Config.REMINDER}"
+
+    # Append any custom assistant prompts exactly as requested, but attached to user prompt
+    custom_prompt = getattr(Config, "get_custom_assistant_prompt", lambda: "")()
+    if custom_prompt:
+        constraint_text += f"\n\n[ASSISTANT DIRECTIVE: {custom_prompt}]"
+
+    # Safely anchor constraints by skipping any cutoff "Continue" model turns
+    if constraint_text and clean_history:
+        for i in range(len(clean_history) - 1, -1, -1):
+            if clean_history[i]["role"] == "user":
+                clean_history[i]["parts"][0]["text"] += f"\n\n{constraint_text.strip()}"
+                break
+
+    return clean_history, system_instruction_payload
+
+
+# ------------------------------------------
+
+
 # Restored your Gemma/Gemini compatible transform logic exactly
 def transform_janitor_to_google_ai(messages):
     if not messages or not isinstance(messages, list):
@@ -148,54 +222,6 @@ def process_llm_request(json_data, api_key, is_streaming):
         if debug_mode:
             print(f"\n[{request_time}] Received request")
 
-        # 1. Prefill Logic
-        if Config.ENABLE_NSFW or Config.ENABLE_THINKING:
-            messages = json_data.get("messages", [])
-
-            if messages and messages[-1].get("role") == "user":
-                if Config.ENABLE_NSFW and getattr(Config, "NSFW_PREFILL", None):
-                    messages.append({"content": Config.NSFW_PREFILL, "role": "system"})
-                if Config.ENABLE_THINKING:
-                    messages.append(
-                        {"content": Config.THINKING_PROMPT, "role": "system"}
-                    )
-                    messages.append({"content": Config.REMINDER, "role": "system"})
-                messages.append(
-                    {
-                        "content": Config.get_custom_assistant_prompt(),
-                        "role": "assistant",
-                    }
-                )
-
-            elif messages and messages[-1].get("role") == "assistant":
-                existing_content = messages[-1].get("content", "")
-                last_assistant = messages.pop()
-
-                if Config.ENABLE_NSFW and getattr(Config, "NSFW_PREFILL", None):
-                    messages.append({"content": Config.NSFW_PREFILL, "role": "system"})
-                if Config.ENABLE_THINKING:
-                    messages.append(
-                        {"content": Config.THINKING_PROMPT, "role": "system"}
-                    )
-                    messages.append({"content": Config.REMINDER, "role": "system"})
-
-                if existing_content.strip() and (
-                    not Config.ENABLE_NSFW
-                    or existing_content.strip()
-                    != getattr(Config, "NSFW_PREFILL", "").strip()
-                ):
-                    messages.append(last_assistant)
-
-                messages.append(
-                    {
-                        "content": Config.get_custom_assistant_prompt(),
-                        "role": "assistant",
-                    }
-                )
-
-            json_data["messages"] = messages
-
-        # 2. Setup Google AI Request
         selected_model = (
             json_data.get("model")
             if json_data.get("model") and json_data["model"] != "custom"
@@ -204,9 +230,12 @@ def process_llm_request(json_data, api_key, is_streaming):
         if debug_mode:
             print(f"Using model: {selected_model}")
 
-        google_ai_contents = transform_janitor_to_google_ai(
+        # --- APPLY THE NEW PIPELINE HERE ---
+        # The old list mutation prefill logic has been deleted.
+        google_ai_contents, system_instruction = build_gemini_payload(
             json_data.get("messages", [])
         )
+        # -----------------------------------
 
         if not google_ai_contents:
             print("Error: Invalid or empty message format received.")
@@ -219,7 +248,16 @@ def process_llm_request(json_data, api_key, is_streaming):
             "maxOutputTokens": json_data.get("max_tokens", Config.MAX_TOKENS),
             "topP": json_data.get("top_p", Config.TOP_P),
             "topK": json_data.get("top_k", Config.TOP_K),
+            "thinkingConfig": {"thinkingLevel": "high"},
         }
+
+        selected_model = selected_model.lower()
+
+        # Conditionally inject thinking config based on the model series
+        if "gemini-3" in selected_model or "gemma-4" in selected_model:
+            generation_config["thinkingConfig"] = {"thinkingLevel": "high"}
+        elif "gemini-2.5" in selected_model:
+            generation_config["thinkingConfig"] = {"thinkingBudget": -1}
 
         google_ai_request = {
             "contents": google_ai_contents,
@@ -235,6 +273,9 @@ def process_llm_request(json_data, api_key, is_streaming):
         #         )
         #     if json_data.get("presence_penalty") is not None:
         #         generation_config["presencePenalty"] = json_data.get("presence_penalty")
+
+        if system_instruction:
+            google_ai_request["systemInstruction"] = system_instruction
 
         if getattr(Config, "ENABLE_GOOGLE_SEARCH", False):
             google_ai_request["tools"] = [{"google_search": {}}]
@@ -270,6 +311,7 @@ def process_llm_request(json_data, api_key, is_streaming):
 
         endpoint = "streamGenerateContent" if is_streaming else "generateContent"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:{endpoint}?key={api_key}"
+
         if is_streaming:
             url += "&alt=sse"
 
@@ -289,7 +331,6 @@ def process_llm_request(json_data, api_key, is_streaming):
                 # Initial Connection Retries
                 for attempt in range(1, max_retries + 1):
                     try:
-
                         if debug_mode:
                             print(
                                 f"Connecting to Google AI for streaming (Attempt {attempt}/{max_retries})..."
@@ -319,7 +360,9 @@ def process_llm_request(json_data, api_key, is_streaming):
                             response.raise_for_status()
                         except requests.exceptions.HTTPError as e:
                             print("\n🚨 GOOGLE API ERROR BODY 🚨")
-                            print(e.response.text)  # Successfully logs the golden ticket
+                            print(
+                                e.response.text
+                            )  # Successfully logs the golden ticket
                             raise e  # Sent to outer except block to trigger a retry if attempts remain
 
                         record_success()
@@ -356,7 +399,15 @@ def process_llm_request(json_data, api_key, is_streaming):
                         if debug_mode and (
                             "finishReason" in chunk_str or "error" in chunk_str
                         ):
-                            print(f"\n🚨 RAW GOOGLE API INTERCEPT:\n{chunk_str}\n")
+                            # Clean up the massive signatures without reloading modules
+                            printed_chunk = chunk_str
+                            if "thoughtSignature" in printed_chunk:
+                                printed_chunk = re.sub(
+                                    r'("thoughtSignature":\s*")[^"]+(")',
+                                    r"\1...[TRUNCATED SIGNATURE]\2",
+                                    printed_chunk,
+                                )
+                            print(f"\n🚨 RAW GOOGLE API INTERCEPT:\n{printed_chunk}\n")
                         # --------------------------------
 
                         if not chunk_str.startswith("data: "):
@@ -420,7 +471,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                                             content_delta += part["text"]
                                 finish_reason = candidate.get("finishReason")
 
-                            if not content_delta:
+                            if not content_delta and not finish_reason:
                                 continue
 
                             if Config.ENABLE_THINKING:

@@ -119,7 +119,7 @@ def build_gemini_payload(messages):
         elif role in ["user", "assistant"]:
             google_role = "user" if role == "user" else "model"
 
-            # Collapse back-to-back duplicate roles to prevent 400 Bad Request
+            # Collapse back-to-back duplicate roles
             if clean_history and clean_history[-1]["role"] == google_role:
                 clean_history[-1]["parts"][0]["text"] += f"\n\n{content}"
             else:
@@ -133,7 +133,6 @@ def build_gemini_payload(messages):
     ):
         system_instructions.append(f"[Core Instructions]:\n{Config.THINKING_PROMPT}")
 
-    # Format the final root SystemInstruction payload
     system_instruction_text = "\n\n---\n\n".join(system_instructions)
     system_instruction_payload = (
         {"role": "system", "parts": [{"text": system_instruction_text}]}
@@ -141,7 +140,7 @@ def build_gemini_payload(messages):
         else None
     )
 
-    # 3. Anchor Dynamic Constraints to the Final User Turn (Zero Token Decay)
+    # 3. Anchor Dynamic Constraints
     constraint_text = ""
     if getattr(Config, "ENABLE_NSFW", False) and getattr(Config, "NSFW_PREFILL", ""):
         constraint_text += f"\n\n[SYSTEM REMINDER: {Config.NSFW_PREFILL}]"
@@ -149,17 +148,25 @@ def build_gemini_payload(messages):
     if getattr(Config, "ENABLE_THINKING", False) and getattr(Config, "REMINDER", ""):
         constraint_text += f"\n\n{Config.REMINDER}"
 
-    # Append any custom assistant prompts exactly as requested, but attached to user prompt
-    custom_prompt = getattr(Config, "get_custom_assistant_prompt", lambda: "")()
-    if custom_prompt:
-        constraint_text += f"\n\n[ASSISTANT DIRECTIVE: {custom_prompt}]"
+    # Safely anchor constraints with a fallback for edge cases
+    if constraint_text:
+        injected = False
+        if clean_history:
+            # Try to anchor to the most recent user message
+            for i in range(len(clean_history) - 1, -1, -1):
+                if clean_history[i]["role"] == "user":
+                    clean_history[i]["parts"][0]["text"] += (
+                        f"\n\n{constraint_text.strip()}"
+                    )
+                    injected = True
+                    break
 
-    # Safely anchor constraints by skipping any cutoff "Continue" model turns
-    if constraint_text and clean_history:
-        for i in range(len(clean_history) - 1, -1, -1):
-            if clean_history[i]["role"] == "user":
-                clean_history[i]["parts"][0]["text"] += f"\n\n{constraint_text.strip()}"
-                break
+        # FALLBACK: If history is empty, or there was NO user message (e.g., swiping a greeting)
+        if not injected:
+            # Prepend a user turn to hold the rules, keeping the user->model alternation legal
+            clean_history.insert(
+                0, {"role": "user", "parts": [{"text": constraint_text.strip()}]}
+            )
 
     return clean_history, system_instruction_payload
 
@@ -248,7 +255,6 @@ def process_llm_request(json_data, api_key, is_streaming):
             "maxOutputTokens": json_data.get("max_tokens", Config.MAX_TOKENS),
             "topP": json_data.get("top_p", Config.TOP_P),
             "topK": json_data.get("top_k", Config.TOP_K),
-            "thinkingConfig": {"thinkingLevel": "high"},
         }
 
         selected_model = selected_model.lower()

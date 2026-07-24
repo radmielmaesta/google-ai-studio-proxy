@@ -652,13 +652,28 @@ def process_llm_request(json_data, api_key, is_streaming):
                 return jsonify(create_error_response(filter_msg)), 200
 
             candidate = google_response["candidates"][0]
-            content = "".join(
-                [
-                    part["text"]
-                    for part in candidate["content"]["parts"]
-                    if "text" in part
-                ]
-            )
+            native_thinking_text = ""
+            visible_content_text = ""
+
+            # --- SEPARATE NATIVE THOUGHTS FROM VISIBLE CONTENT ---
+            if "content" in candidate and "parts" in candidate["content"]:
+                for part in candidate["content"]["parts"]:
+                    if "text" in part:
+                        if part.get("thought"):
+                            native_thinking_text += part["text"]
+                        else:
+                            visible_content_text += part["text"]
+
+            # Print Native Thoughts to terminal console
+            if native_thinking_text and getattr(
+                Config, "DISPLAY_THINKING_IN_COLAB", True
+            ):
+                print("\n" + "=" * 50)
+                print("NATIVE THINKING PROCESS (NON-STREAMING):")
+                print(native_thinking_text.strip())
+                print("=" * 50 + "\n")
+
+            content = visible_content_text
 
             # --- NEW: Parse out thoughts for non-streaming mode ---
             if getattr(Config, "ENABLE_THINKING", False):
@@ -671,7 +686,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                     Config, "DISPLAY_THINKING_IN_COLAB", True
                 ):
                     print("\n" + "=" * 50)
-                    print("THINKING PROCESS (NON-STREAMING):")
+                    print("SIMULATED THINKING PROCESS (NON-STREAMING):")
                     print(thinking_content)
                     print("=" * 50 + "\n")
 

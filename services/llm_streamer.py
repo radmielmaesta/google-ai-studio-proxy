@@ -7,7 +7,7 @@ import requests
 from flask import Response, jsonify, stream_with_context
 
 from core.config import Config
-from utils.text_parser import StreamingParser
+from utils.text_parser import StreamingParser, extract_thinking_and_response
 
 # --- SMART CONNECTION POOLING ---
 _http_session = requests.Session()
@@ -95,7 +95,7 @@ def get_safety_settings(model_name):
 
 
 # --- NEW: PURE PIPELINE TRANSFORMATION ---
-def build_gemini_payload(messages):
+def build_gemini_payload(messages, selected_model):
     """
     Extracts system components for the root instruction, enforces strict
     role alternation, and anchors constraints safely to the final user turn.
@@ -127,11 +127,18 @@ def build_gemini_payload(messages):
                     {"role": google_role, "parts": [{"text": content}]}
                 )
 
+    is_native_thinking = (
+        "gemini-3" in selected_model
+        or "gemma-4" in selected_model
+        or "gemini-2.5" in selected_model
+    )
+
     # 2. Add Proxy-Level System Instructions (Thinking rules, etc.)
-    if getattr(Config, "ENABLE_THINKING", False) and getattr(
-        Config, "THINKING_PROMPT", ""
-    ):
-        system_instructions.append(f"[Core Instructions]:\n{Config.THINKING_PROMPT}")
+    if getattr(Config, "ENABLE_THINKING", False):
+        formatted_prompt = Config.get_formatted_thinking_prompt(
+            is_native_thinking=is_native_thinking
+        )
+        system_instructions.append(f"[Core Instructions]:\n{formatted_prompt}")
 
     system_instruction_text = "\n\n---\n\n".join(system_instructions)
     system_instruction_payload = (
@@ -145,8 +152,10 @@ def build_gemini_payload(messages):
     if getattr(Config, "ENABLE_NSFW", False) and getattr(Config, "NSFW_PREFILL", ""):
         constraint_text += f"\n\n[SYSTEM REMINDER: {Config.NSFW_PREFILL}]"
 
+    # NEW: Fetch the dynamically formatted reminder
     if getattr(Config, "ENABLE_THINKING", False) and getattr(Config, "REMINDER", ""):
-        constraint_text += f"\n\n{Config.REMINDER}"
+        safe_reminder = Config.get_formatted_reminder(is_native_thinking)
+        constraint_text += f"\n\n{safe_reminder}"
 
     # Safely anchor constraints with a fallback for edge cases
     if constraint_text:
@@ -240,7 +249,7 @@ def process_llm_request(json_data, api_key, is_streaming):
         # --- APPLY THE NEW PIPELINE HERE ---
         # The old list mutation prefill logic has been deleted.
         google_ai_contents, system_instruction = build_gemini_payload(
-            json_data.get("messages", [])
+            json_data.get("messages", []), selected_model
         )
         # -----------------------------------
 
@@ -276,15 +285,6 @@ def process_llm_request(json_data, api_key, is_streaming):
             "generationConfig": generation_config,
             "safetySettings": get_safety_settings(selected_model),
         }
-
-        # if "gemini" in selected_model.lower():
-        #     google_ai_request["safetySettings"] = get_safety_settings(selected_model)
-        #     if json_data.get("frequency_penalty") is not None:
-        #         generation_config["frequencyPenalty"] = json_data.get(
-        #             "frequency_penalty"
-        #         )
-        #     if json_data.get("presence_penalty") is not None:
-        #         generation_config["presencePenalty"] = json_data.get("presence_penalty")
 
         if system_instruction:
             google_ai_request["systemInstruction"] = system_instruction
@@ -401,6 +401,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                 try:
                     has_sent_data = False
                     last_keepalive = time.time()  # <-- NEW: Track the heartbeat timer
+                    is_printing_thoughts = False  # Tracks if our decoration box is open
 
                     for chunk in response.iter_lines():
                         if not chunk:
@@ -487,18 +488,31 @@ def process_llm_request(json_data, api_key, is_streaming):
                                                 content_delta += part["text"]
                                 finish_reason = candidate.get("finishReason")
 
+                            if debug_mode and getattr(
+                                Config, "DISPLAY_THINKING_IN_COLAB", True
+                            ):
+                                import sys
+
+                                # 1. If we have thoughts to print
+                                if thought_delta:
+                                    # Open the box if it isn't open yet
+                                    if not is_printing_thoughts:
+                                        print("\n" + "=" * 50)
+                                        print("NATIVE THINKING PROCESS:")
+                                        is_printing_thoughts = True
+
+                                    # Stream the word smoothly
+                                    sys.stdout.write(thought_delta)
+                                    sys.stdout.flush()
+
+                                # 2. If thoughts stopped and standard content starts
+                                elif content_delta and is_printing_thoughts:
+                                    # Close the box!
+                                    print("\n" + "=" * 50 + "\n")
+                                    is_printing_thoughts = False
+
                             if not content_delta and not finish_reason:
                                 continue
-
-                            if (
-                                debug_mode
-                                and thought_delta
-                                and getattr(Config, "DISPLAY_THINKING_IN_COLAB", True)
-                            ):
-                                print("\n" + "=" * 50)
-                                print("THINKING PROCESS:")
-                                print(thought_delta)
-                                print("=" * 50)
 
                             if Config.ENABLE_THINKING:
                                 content_to_send, thinking_for_colab, _ = (
@@ -513,7 +527,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                                 ):
                                     # Print to colab silently without breaking the stream
                                     print("\n" + "=" * 50)
-                                    print("THINKING PROCESS:")
+                                    print("SIMULATED THINKING PROCESS:")
                                     print(thinking_for_colab)
                                     print("=" * 50)
                                     pass
@@ -645,6 +659,26 @@ def process_llm_request(json_data, api_key, is_streaming):
                     if "text" in part
                 ]
             )
+
+            # --- NEW: Parse out thoughts for non-streaming mode ---
+            if getattr(Config, "ENABLE_THINKING", False):
+                thinking_content, parsed_response, _ = extract_thinking_and_response(
+                    content
+                )
+
+                # Print thoughts to colab console if enabled
+                if thinking_content and getattr(
+                    Config, "DISPLAY_THINKING_IN_COLAB", True
+                ):
+                    print("\n" + "=" * 50)
+                    print("THINKING PROCESS (NON-STREAMING):")
+                    print(thinking_content)
+                    print("=" * 50 + "\n")
+
+                # Only send the cleaned response to Janitor
+                if parsed_response:
+                    content = parsed_response
+            # ------------------------------------------------------
 
             janitor_response = {
                 "id": f"chatcmpl-{int(time.time())}",

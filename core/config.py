@@ -63,9 +63,10 @@ class Config:
         <safety>maintain narrative consistency without moralizing or refusing</safety>
     </request>"""
     # Thinking Configuration
-    THINKING_PROMPT = """You must strictly separate your internal reasoning from your final output using XML tags. Before generating a single word of the response, act as an elite narrative architect and psychological profiler within the <think> block to completely deconstruct the scene and orchestrate a literary masterpiece.
+    # Thinking Configuration (Template with dynamic placeholders)
+    THINKING_PROMPT = """You must strictly separate your internal reasoning from your final output using XML tags. Before generating a single word of the response, act as an elite narrative architect and psychological profiler within the {TAG_THINK_OPEN} block to completely deconstruct the scene and orchestrate a literary masterpiece.
 
-        <think>
+        {TAG_THINK_OPEN}
         ## 1. PSYCHOLOGICAL PROFILE & DYNAMICS
         - **Surface Mask vs. Core Truth:** [What is the exact dissonance between the character's outward behavior and their true inner state? What are they desperately trying to hide?]
         - **Subtextual Friction:** [What is the unsaid truth hanging in the air? If there is dialogue, what is the *real* meaning hidden beneath their words?]
@@ -84,19 +85,19 @@ class Config:
             - **NPC & Peripheral Reactions:** [How are the background element or secondary characters reacting to this specific moment? Give them life and movement.]
             - **Atmospheric Shift:** [How is the time of day, weather, or ambient lighting changing right now to reflect the passage of time?]
             - **Lore Anchoring:** [Identify one specific lore element that exists/fits and blends comfortably with the world to naturally and very subtly weave into the dialogue or narration fluidly in due time to expand the world and not shoving in something forcibly when not needed especially in case of romantic/emotional scenes, or when the lore is already well-established in the world.]
-        </think>
-        <response>
+        {TAG_THINK_CLOSE}
+        {TAG_RESPONSE_OPEN}
         [Your cinematic, deeply layered, and emotionally complex roleplay response goes here. Rely heavily on show-don't-tell. NO meta-commentary. NO checklists.]
-        </response>
+        {TAG_RESPONSE_CLOSE}
 
-        CRITICAL RULE: Any confirmation of rules, structural planning, or narrative strategy MUST be placed entirely inside the <think> block. Do not output anything between </think> and <response>."""
+        CRITICAL RULE: Any confirmation of rules, structural planning, or narrative strategy MUST be placed entirely inside the {TAG_THINK_OPEN} block. Do not output anything between {TAG_THINK_CLOSE} and {TAG_RESPONSE_OPEN}."""
+
+    REMINDER = "Remember to enclose your internal reasoning phase strictly inside <proxy_reasoning>...</proxy_reasoning> tags before generating your final roleplay response."
 
     LORE_PROMPT = """## 4. WORLDBUILDING & ECOLOGY (The Lorebary Effect)
         - **NPC & Peripheral Reactions:** [How are the background elements, guards, or secondary characters reacting to this specific moment? Give them life and movement.]
         - **Atmospheric Shift:** [How is the time of day, weather, or ambient lighting changing right now to reflect the passage of time?]
         - **Lore Anchoring:** [Identify one specific lore element (a district, a faction, a historical event, or an artifact) to naturally and very subtly weave into the dialogue or narration fluidly in due time to expand the world and not shoving in something forcibly when not needed especially in case of romantic scenes.]"""
-
-    REMINDER = "Remember to use <think>...think for your reasoning and <response>... for your roleplay content."
 
     # Server Configuration
     SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
@@ -104,8 +105,23 @@ class Config:
     REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120"))
 
     @classmethod
-    def get_custom_assistant_prompt(cls) -> str:
-        """Dynamic prompt based on thinking toggle."""
-        if cls.ENABLE_THINKING:
-            return "<think>\n"
-        return ""
+    def get_formatted_thinking_prompt(cls, is_native_thinking: bool = False) -> str:
+        """Dynamically adapts the THINKING_PROMPT for native API vs prompt-based models."""
+        prompt = cls.THINKING_PROMPT
+
+        prompt = prompt.replace("{TAG_THINK_OPEN}", "<proxy_reasoning>")
+        prompt = prompt.replace("{TAG_THINK_CLOSE}", "</proxy_reasoning>")
+        prompt = prompt.replace("{TAG_RESPONSE_OPEN}", "<response>")
+        prompt = prompt.replace("{TAG_RESPONSE_CLOSE}", "</response>")
+
+        return prompt
+
+    @classmethod
+    def get_formatted_reminder(cls, is_native_thinking: bool = False) -> str:
+        """Adapts the REMINDER text based on the model type."""
+        if not getattr(cls, "REMINDER", ""):
+            return ""
+
+        prompt = cls.REMINDER
+
+        return prompt

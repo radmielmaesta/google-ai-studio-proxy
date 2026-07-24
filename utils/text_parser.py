@@ -8,13 +8,13 @@ from core.config import Config
 def extract_thinking_and_response(content):
     """
     Extract thinking and response content with lenient parsing.
-    Keeps </think> and <response> tags in the output to maintain them in chat history.
+    Keeps </proxy_reasoning> and <response> tags in the output to maintain them in chat history.
     Returns: (thinking_content, final_response, parsing_success)
     """
 
     # First, check if we have the ideal format
-    think_start = content.find("<think>")
-    think_end = content.find("</think>")
+    think_start = content.find("<proxy_reasoning>")
+    think_end = content.find("</proxy_reasoning>")
     response_start = content.find("<response>")
     response_end = content.find("</response>")
 
@@ -26,25 +26,27 @@ def extract_thinking_and_response(content):
         and response_end != -1
     ):
         if think_start < think_end < response_start < response_end:
-            thinking_content = content[think_start + 7 : think_end].strip()
-            # Keep </think> and everything after in the response for chat history
-            final_response = content[think_end:].strip()
+            thinking_content = content[think_start + 17 : think_end].strip()
+            # Keep </proxy_reasoning> and everything after in the response for chat history
+            tag_length = len("</proxy_reasoning>")
+            final_response = content[think_end + tag_length :].strip()
             return thinking_content, final_response, True
 
-    # Fallback 1: Look for </think> and treat everything before as thinking
+    # Fallback 1: Look for </proxy_reasoning> and treat everything before as thinking
     if think_end != -1:
-        # Extract everything up to </think> as thinking (excluding the tag)
+        # Extract everything up to </proxy_reasoning> as thinking (excluding the tag)
         thinking_part = content[:think_end]
-        # Remove <think> tag if present
-        if "<think>" in thinking_part:
-            thinking_part = thinking_part.split("<think>", 1)[1]
+        # Remove <proxy_reasoning> tag if present
+        if "<proxy_reasoning>" in thinking_part:
+            thinking_part = thinking_part.split("<proxy_reasoning>", 1)[1]
         thinking_content = thinking_part.strip()
 
-        # Keep </think> and everything after as the response
-        final_response = content[think_end:].strip()
+        # Keep </proxy_reasoning> and everything after as the response
+        tag_length = len("</proxy_reasoning>")
+        final_response = content[think_end + tag_length :].strip()
 
         if Config.ENABLE_THINKING and Config.DISPLAY_THINKING_IN_COLAB:
-            print("INFO: Used lenient parsing with </think> marker")
+            print("INFO: Used lenient parsing with </proxy_reasoning> marker")
 
         return thinking_content, final_response, False
 
@@ -52,9 +54,9 @@ def extract_thinking_and_response(content):
     if response_start != -1:
         # Everything before <response> is thinking
         thinking_content = content[:response_start].strip()
-        # Remove <think> tag if present
-        if "<think>" in thinking_content:
-            thinking_content = thinking_content.split("<think>", 1)[1].strip()
+        # Remove <proxy_reasoning> tag if present
+        if "<proxy_reasoning>" in thinking_content:
+            thinking_content = thinking_content.split("<proxy_reasoning>", 1)[1].strip()
 
         # Keep <response> and everything after as the response
         final_response = content[response_start:].strip()
@@ -94,12 +96,12 @@ class StreamingParser:
 
         while True:
             if self.state == "detecting":
-                if "<think>" in self.buffer:
+                if "<proxy_reasoning>" in self.buffer:
                     # Explicit tags detected, go into strict lockdown
                     self.state = "searching"
                     continue
                 elif len(self.buffer) > 15:
-                    # 15 chars passed with no <think> tag.
+                    # 15 chars passed with no <proxy_reasoning> tag.
                     # The model is using native thoughtSignature. Open the gates!
                     self.buffer = self.buffer.replace("<response>", "").replace(
                         "<respon", ""
@@ -111,21 +113,21 @@ class StreamingParser:
 
             elif self.state == "searching":
                 # STRICT LOCKDOWN: We are inside the explicit thought.
-                if "</think>" in self.buffer:
-                    parts = self.buffer.split("</think>", 1)
+                if "</proxy_reasoning>" in self.buffer:
+                    parts = self.buffer.split("</proxy_reasoning>", 1)
 
                     # Extract the thinking part for the terminal
                     thinking_part = self.all_content[
-                        : self.all_content.find("</think>")
+                        : self.all_content.find("</proxy_reasoning>")
                     ]
-                    if "<think>" in thinking_part:
-                        thinking_part = thinking_part.split("<think>", 1)[1]
+                    if "<proxy_reasoning>" in thinking_part:
+                        thinking_part = thinking_part.split("<proxy_reasoning>", 1)[1]
                     self.thinking_content = thinking_part.strip()
 
                     if self.display_thinking_in_colab:
                         thinking_for_colab = self.thinking_content
 
-                    # Drop </think> and move into the Airlock
+                    # Drop </proxy_reasoning> and move into the Airlock
                     self.buffer = parts[1]
                     self.state = "waiting_for_response"
                     continue
@@ -168,7 +170,5 @@ class StreamingParser:
                 self.buffer = ""
                 break
 
-        is_complete = self.state == "finished"
-        return content_to_send, thinking_for_colab, is_complete
         is_complete = self.state == "finished"
         return content_to_send, thinking_for_colab, is_complete

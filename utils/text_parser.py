@@ -87,6 +87,8 @@ class StreamingParser:
         self.response_content = ""
         self.buffer = ""
         self.all_content = ""
+        # --- NEW: First-Text Latch ---
+        self.is_first_text_chunk = True
 
     def process_chunk(self, chunk_content):
         self.buffer += chunk_content
@@ -173,17 +175,45 @@ class StreamingParser:
                     break
 
             elif self.state == "in_response":
-                # Gates are open. Send the pure story to JanitorAI.
+                # 1. THE LATCH: Catch and destroy top ghost newlines before they escape
+                if self.is_first_text_chunk:
+                    self.buffer = self.buffer.lstrip()
+                    if not self.buffer:
+                        break  # Wait for actual text to arrive
+                    self.is_first_text_chunk = False
+
+                # 2. ENDGAME CATCHER: The closing tag has arrived
                 if "</response>" in self.buffer:
                     parts = self.buffer.split("</response>", 1)
-                    content_to_send = parts[0]
-                    self.response_content += parts[0]
+                    # The .rstrip() here permanently destroys bottom ghost newlines!
+                    content_to_send = parts[0].rstrip()
+                    self.response_content += content_to_send
                     self.buffer = ""
                     self.state = "finished"
+                    break
+
+                # 3. SLIDING BUFFER: Hold trailing whitespace and partial tags
                 else:
-                    content_to_send = self.buffer
-                    self.response_content += self.buffer
-                    self.buffer = ""
+                    # Look at the buffer without its trailing whitespace
+                    stripped_buf = self.buffer.rstrip()
+
+                    if not stripped_buf:
+                        # The buffer is currently ONLY whitespace. Hold it in memory.
+                        break
+
+                    # We have real text. Check if a tag might be forming at the end.
+                    last_bracket = stripped_buf.rfind("<")
+
+                    if last_bracket != -1 and len(stripped_buf) - last_bracket < 15:
+                        # A bracket is dangerously close to the end. Hold everything from the bracket onward!
+                        content_to_send = self.buffer[:last_bracket]
+                        self.buffer = self.buffer[last_bracket:]
+                    else:
+                        # No tag forming. Send the safe text, but HOLD the trailing whitespace in memory!
+                        content_to_send = stripped_buf
+                        self.buffer = self.buffer[len(stripped_buf) :]
+
+                    self.response_content += content_to_send
                 break
 
             elif self.state == "finished":

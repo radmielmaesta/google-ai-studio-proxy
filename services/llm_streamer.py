@@ -66,9 +66,8 @@ def create_error_response(error_message):
         if str(error_message).startswith("Error: ")
         else str(error_message)
     )[1:-1]
-    return {
-        "choices": [{"message": {"content": clean_message}, "finish_reason": "error"}]
-    }
+    # Standard OpenAI Error Format
+    return {"error": {"message": clean_message, "type": "proxy_error"}}
 
 
 def create_error_stream_chunk(error_message):
@@ -77,9 +76,8 @@ def create_error_stream_chunk(error_message):
         if str(error_message).startswith("Error: ")
         else str(error_message)
     )[1:-1]
-    error_chunk = {
-        "choices": [{"delta": {"content": clean_message}, "finish_reason": "error"}]
-    }
+    # Standard OpenAI Error Format for streams
+    error_chunk = {"error": {"message": clean_message, "type": "proxy_error"}}
     return f"data: {json.dumps(error_chunk)}\n\n"
 
 

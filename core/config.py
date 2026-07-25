@@ -83,18 +83,46 @@ class Config:
         - **Lore Anchoring:** [Identify one specific lore element that exists/fits and blends comfortably with the world to naturally and very subtly weave into the dialogue or narration fluidly in due time to expand the world and not shoving in something forcibly when not needed especially in case of romantic/emotional scenes, or when the lore is already well-established in the world.]
     """
     # Thinking Configuration (Template with dynamic placeholders)
-    THINKING_PROMPT = """You must strictly separate your internal reasoning from your final output using XML tags. Before generating a single word of the response, act as an elite narrative architect and psychological profiler within the {TAG_THINK_OPEN} block to completely deconstruct the scene and orchestrate a literary masterpiece.
+    # -----------------------------------------------------------------
+    # STANDARD PROMPT (For non-native models: Gemma, Gemini 1.5)
+    # -----------------------------------------------------------------
+    STANDARD_THINKING_PROMPT = """You must strictly separate your internal reasoning from your final output using XML tags. Before generating a single word of the response, act as an elite narrative architect and psychological profiler within the {TAG_THINK_OPEN} block to completely deconstruct the scene and orchestrate a literary masterpiece.
 
-        {TAG_THINK_OPEN}
-        {THINKING_PROMPT_DEFINITION}
-        {TAG_THINK_CLOSE}
-        {TAG_RESPONSE_OPEN}
-        [Your cinematic, deeply layered, and emotionally complex roleplay response goes here. Rely heavily on show-don't-tell. NO meta-commentary. NO checklists.]
-        {TAG_RESPONSE_CLOSE}
+    {TAG_THINK_OPEN}
+    {THINKING_PROMPT_DEFINITION}
+    {TAG_THINK_CLOSE}
+    {TAG_RESPONSE_OPEN}
+    [Your cinematic, deeply layered, and emotionally complex roleplay response goes here. Rely heavily on show-don't-tell. NO meta-commentary. NO checklists.]
+    {TAG_RESPONSE_CLOSE}
 
-        CRITICAL RULE: Any confirmation of rules, structural planning, or narrative strategy MUST be placed entirely inside the {TAG_THINK_OPEN} block. Do not output anything between {TAG_THINK_CLOSE} and {TAG_RESPONSE_OPEN}."""
+    CRITICAL RULE: Any confirmation of rules, structural planning, or narrative strategy MUST be placed entirely inside the {TAG_THINK_OPEN} block. Do not output anything between {TAG_THINK_CLOSE} and {TAG_RESPONSE_OPEN}."""
 
-    REMINDER = "Remember to enclose your internal reasoning phase strictly inside <proxy_reasoning>...</proxy_reasoning> tags before generating your final roleplay response."
+    # -----------------------------------------------------------------
+    # DUAL-STAGE PROMPT (For native models: Gemini 3.0, 2.5)
+    # -----------------------------------------------------------------
+    NATIVE_DUAL_THINKING_PROMPT = """SYSTEM ARCHITECTURE DIRECTIVE: You are equipped with a DUAL-STAGE reasoning architecture. You MUST utilize BOTH stages consecutively.
+
+    STAGE 1 (Native Internal Thinking):
+    Use your built-in, native hidden thought channel to freely process the psychological profiling, logic, safety bounds, and mechanics of the scene.
+
+    STAGE 2 (Proxy Strategy & Framework):
+    In your STANDARD VISIBLE TEXT OUTPUT, you MUST begin by explicitly generating a {TAG_THINK_OPEN} block. Inside this block, finalize your literary blueprint using the following framework:
+
+    {TAG_THINK_OPEN}
+    {THINKING_PROMPT_DEFINITION}
+    {TAG_THINK_CLOSE}
+    {TAG_RESPONSE_OPEN}
+    [Your cinematic, deeply layered, and emotionally complex roleplay response goes here.]
+    {TAG_RESPONSE_CLOSE}
+
+    CRITICAL BOUNDARY RULE: DO NOT place the {TAG_THINK_OPEN} tags inside your Stage 1 native internal thoughts. The {TAG_THINK_OPEN} block MUST be generated as standard visible text output immediately preceding your roleplay response."""
+
+    # -----------------------------------------------------------------
+    # REMINDERS
+    # -----------------------------------------------------------------
+    STANDARD_REMINDER = "Remember to enclose your internal reasoning phase strictly inside <proxy_reasoning>...</proxy_reasoning> tags before generating your final roleplay response."
+
+    NATIVE_REMINDER = "CRITICAL: Execute Stage 1 via your native hidden thinking channel, then explicitly open Stage 2 with <proxy_reasoning> tags in your main text output to map your narrative framework before writing the story."
 
     LORE_PROMPT = """## 4. WORLDBUILDING & ECOLOGY (The Lorebary Effect)
         - **NPC & Peripheral Reactions:** [How are the background elements, guards, or secondary characters reacting to this specific moment? Give them life and movement.]
@@ -109,7 +137,12 @@ class Config:
     @classmethod
     def get_formatted_thinking_prompt(cls, is_native_thinking: bool = False) -> str:
         """Dynamically adapts the THINKING_PROMPT for native API vs prompt-based models."""
-        prompt = cls.THINKING_PROMPT
+        # Select the correct prompt architecture based on the model capabilities
+        prompt = (
+            cls.NATIVE_DUAL_THINKING_PROMPT
+            if is_native_thinking
+            else cls.STANDARD_THINKING_PROMPT
+        )
 
         prompt = prompt.replace("{TAG_THINK_OPEN}", "<proxy_reasoning>")
         prompt = prompt.replace("{TAG_THINK_CLOSE}", "</proxy_reasoning>")
@@ -124,9 +157,5 @@ class Config:
     @classmethod
     def get_formatted_reminder(cls, is_native_thinking: bool = False) -> str:
         """Adapts the REMINDER text based on the model type."""
-        if not getattr(cls, "REMINDER", ""):
-            return ""
-
-        prompt = cls.REMINDER
-
-        return prompt
+        # Select the correct reminder architecture
+        return cls.NATIVE_REMINDER if is_native_thinking else cls.STANDARD_REMINDER

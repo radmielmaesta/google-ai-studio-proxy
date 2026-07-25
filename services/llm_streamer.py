@@ -365,15 +365,26 @@ def process_llm_request(json_data, api_key, is_streaming):
                                 time.sleep(retry_delay * attempt)
                                 continue
 
-                        # If it's a 4xx error or other bad status, this raises HTTPError
-                        try:
-                            response.raise_for_status()
-                        except requests.exceptions.HTTPError as e:
+                        # If it's a 4xx error or other bad status, intercept the JSON
+                        if response.status_code != 200:
                             print("\n🚨 GOOGLE API ERROR BODY 🚨")
-                            print(
-                                e.response.text
-                            )  # Successfully logs the golden ticket
-                            raise e  # Sent to outer except block to trigger a retry if attempts remain
+                            print(response.text)
+
+                            clean_error_msg = f"HTTP {response.status_code} Error"
+                            try:
+                                # Extract the rich Google error message
+                                error_data = response.json()
+                                if (
+                                    "error" in error_data
+                                    and "message" in error_data["error"]
+                                ):
+                                    clean_error_msg = f"{response.status_code}: {error_data['error']['message']}"
+                            except Exception:
+                                pass
+
+                            # Raise a generic exception. This prevents the requests library
+                            # from leaking the URL (and API key) into the error string.
+                            raise Exception(clean_error_msg)
 
                         record_success()
                         break
@@ -600,17 +611,39 @@ def process_llm_request(json_data, api_key, is_streaming):
                             time.sleep(retry_delay * attempt)
                             continue
 
-                    response.raise_for_status()
+                    # Intercept non-streaming errors to prevent URL leaks
+                    if response.status_code != 200:
+                        if debug_mode:
+                            print("\n🚨 GOOGLE API ERROR BODY 🚨")
+                            print(response.text + "\n")
+                        clean_error_msg = f"HTTP {response.status_code} Error"
+                        try:
+                            error_data = response.json()
+                            if (
+                                "error" in error_data
+                                and "message" in error_data["error"]
+                            ):
+                                clean_error_msg = f"{response.status_code}: {error_data['error']['message']}"
+                        except Exception:
+                            pass
+                        raise Exception(clean_error_msg)
+
                     record_success()
                     break
+
                 except Exception as e:
-                    record_server_error(500, attempt)
+                    # Dynamically grab the real status code if it exists, otherwise default to 500
+                    actual_status = (
+                        response.status_code if (response is not None) else 500
+                    )
+                    record_server_error(actual_status, attempt)
+
                     if attempt == max_retries:
                         return jsonify(
                             create_error_response(
                                 f"Google AI non-stream request failed: {str(e)}"
                             )
-                        ), 500
+                        ), actual_status if actual_status >= 400 else 500
                     time.sleep(retry_delay * attempt)
 
             if not response:
@@ -628,6 +661,35 @@ def process_llm_request(json_data, api_key, is_streaming):
                         "Google AI returned an invalid, non-JSON response."
                     )
                 ), 502
+
+            # --- NEW: NON-STREAMING DIAGNOSTICS & USAGE METADATA ---
+            if debug_mode:
+                usage = google_response.get("usageMetadata")
+                if usage:
+                    print("\n📊 TOKEN USAGE (NON-STREAMING):")
+                    print(json.dumps(usage, indent=2))
+
+                # Check for safety blocks and unusual finish reasons
+                prompt_feedback = google_response.get("promptFeedback")
+                if prompt_feedback and prompt_feedback.get("blockReason"):
+                    print(
+                        f"\n🚨 GOOGLE BLOCKED THE PROMPT! Reason: {prompt_feedback['blockReason']}"
+                    )
+                    if "safetyRatings" in prompt_feedback:
+                        print(
+                            f"🚨 Details: {json.dumps(prompt_feedback['safetyRatings'], indent=2)}"
+                        )
+
+                if google_response.get("candidates"):
+                    cand = google_response["candidates"][0]
+                    reason = cand.get("finishReason")
+                    if reason and reason not in ["STOP", None]:
+                        print(f"\n🚨 GENERATION KILLED! Reason: {reason}")
+                        if "safetyRatings" in cand:
+                            print(
+                                f"🚨 Safety Trigger: {json.dumps(cand['safetyRatings'], indent=2)}"
+                            )
+            # -------------------------------------------------------
 
             # Non-streaming autopsy builder
             if not google_response.get("candidates") or not google_response[

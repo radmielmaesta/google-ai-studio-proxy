@@ -100,15 +100,32 @@ class StreamingParser:
                     # Explicit tags detected, go into strict lockdown
                     self.state = "searching"
                     continue
-                elif len(self.buffer) > 15:
-                    # 15 chars passed with no <proxy_reasoning> tag.
-                    # The model is using native thoughtSignature. Open the gates!
-                    self.buffer = self.buffer.replace("<response>", "").replace(
-                        "<respon", ""
-                    )
+
+                # Strip leading whitespace to accurately check the first visible character
+                stripped_buffer = self.buffer.lstrip()
+
+                if stripped_buffer.startswith("<"):
+                    # The stream is starting with a bracket. It might be building our tag.
+                    # Wait patiently, but implement a 30-character fail-safe just in case.
+                    if len(self.buffer) >= 30:
+                        self.buffer = self.buffer.replace("<response>", "").replace(
+                            "<respon", ""
+                        )
+                        self.state = "in_response"
+                        continue
+                    else:
+                        # Wait for the next chunk to complete the tag
+                        break
+
+                elif len(stripped_buffer) > 0:
+                    # Starting with normal text, strip any accidental leading newlines
+                    # This is definitely not a proxy_reasoning block. Open the gates instantly!
+                    self.buffer = self.buffer.lstrip()
                     self.state = "in_response"
                     continue
+
                 else:
+                    # The buffer is still empty or just whitespace. Keep waiting.
                     break
 
             elif self.state == "searching":
@@ -139,14 +156,17 @@ class StreamingParser:
                 # AIRLOCK: Now we actively look for the real <response> tag to delete it.
                 if "<response>" in self.buffer:
                     parts = self.buffer.split("<response>", 1)
-                    self.buffer = parts[1]
+                    # .lstrip() eats all \n and spaces sitting between <response> and the story
+                    self.buffer = parts[1].lstrip()
                     self.state = "in_response"
                     continue
                 elif len(self.buffer) > 40:
                     # If 40 chars pass without a response tag, it forgot. Open the gates.
-                    self.buffer = self.buffer.replace("<response>", "").replace(
-                        "<respon", ""
-                    )
+                    self.buffer = (
+                        self.buffer.replace("<response>", "")
+                        .replace("<respon", "")
+                        .lstrip()
+                    )  # Clean leading newlines here as well
                     self.state = "in_response"
                     continue
                 else:
@@ -167,6 +187,7 @@ class StreamingParser:
                 break
 
             elif self.state == "finished":
+                self.response_content = self.response_content.rstrip()
                 self.buffer = ""
                 break
 

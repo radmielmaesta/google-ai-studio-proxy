@@ -1,4 +1,5 @@
 # MUST be first — before any stdlib is imported
+import gevent
 from gevent import monkey
 
 monkey.patch_all()
@@ -8,7 +9,9 @@ import platform
 import re
 import subprocess
 import sys
+import time
 import urllib.request
+from datetime import datetime
 
 from flask import Flask
 from flask_cors import CORS
@@ -25,6 +28,24 @@ tunnel_process = None
 
 
 import shutil  # <-- Add this import at the top of your file
+
+
+def heartbeat():
+    """Periodically prints a heartbeat so Colab users know the server is alive."""
+    start = time.time()
+
+    while True:
+        uptime = int(time.time() - start)
+        h, rem = divmod(uptime, 3600)
+        m, s = divmod(rem, 60)
+
+        print(
+            f"💓 [{datetime.now():%H:%M:%S}] "
+            f"Server running | Uptime {h:02}:{m:02}:{s:02}",
+            flush=True,
+        )
+
+        gevent.sleep(60)
 
 
 def start_tunnel(port):
@@ -58,7 +79,9 @@ def start_tunnel(port):
                 print(f"ℹ️  '{binary_name}' not found. Auto-downloading locally...")
 
                 # Restore the actual binary distribution payloads
-                base_url = "https://github.com/cloudflare/cloudflared/releases/latest/download"
+                base_url = (
+                    "https://github.com/cloudflare/cloudflared/releases/latest/download"
+                )
                 if system == "linux" and "x86_64" in machine:
                     url = f"{base_url}/cloudflared-linux-amd64"
                 elif system == "linux" and "aarch64" in machine:
@@ -73,9 +96,14 @@ def start_tunnel(port):
 
                 try:
                     # Cleaner streaming context: uses a minimalist browser signature bypass
-                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                    
-                    with urllib.request.urlopen(req) as response, open(local_binary, "wb") as out_file:
+                    req = urllib.request.Request(
+                        url, headers={"User-Agent": "Mozilla/5.0"}
+                    )
+
+                    with (
+                        urllib.request.urlopen(req) as response,
+                        open(local_binary, "wb") as out_file,
+                    ):
                         shutil.copyfileobj(response, out_file)
 
                     if not is_windows:
@@ -97,9 +125,7 @@ def start_tunnel(port):
             stderr=subprocess.STDOUT,
             text=True,
             # Force Windows to flush text immediately instead of buffering
-            creationflags=(
-                subprocess.CREATE_NO_WINDOW if system == "windows" else 0
-            ),
+            creationflags=(subprocess.CREATE_NO_WINDOW if system == "windows" else 0),
         )
 
         print("⏳ Waiting for Cloudflare Tunnel URL...")
@@ -159,6 +185,7 @@ if __name__ == "__main__":
     )
 
     try:
+        gevent.spawn(heartbeat)
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n🛑 Shutting down server...")

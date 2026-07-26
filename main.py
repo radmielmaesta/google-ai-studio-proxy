@@ -40,12 +40,12 @@ def heartbeat():
         m, s = divmod(rem, 60)
 
         print(
-            f"💓 [{datetime.now():%H:%M:%S}] "
+            f"💤 [{datetime.now():%H:%M:%S}] "
             f"Server running | Uptime {h:02}:{m:02}:{s:02}",
             flush=True,
         )
 
-        gevent.sleep(60)
+        gevent.sleep(900)
 
 
 def start_tunnel(port):
@@ -173,11 +173,15 @@ if __name__ == "__main__":
 
     url = start_tunnel(Config.SERVER_PORT)
     if url:
-        print(f"\n✅ Cloudflare Tunnel: {url}\n")
+        print("\n" + "=" * 60)
+        print(f"\n🌐 Proxy API URL   : {url}")
+        print("\n" + "=" * 60)
+
     else:
         print("ℹ️  Running locally (no tunnel).\n")
 
-    print(f"🌍 WSGIServer → {Config.SERVER_HOST}:{Config.SERVER_PORT}")
+    print(f"\n🌍 WSGIServer → {Config.SERVER_HOST}:{Config.SERVER_PORT}")
+    print(f"\n🌱 Status Page     : {url}/status\n")
 
     # log=None prevents gevent from printing every single chunk to the console
     server = WSGIServer(

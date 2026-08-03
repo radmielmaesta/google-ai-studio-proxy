@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+old_assets/
+cloudflared
+last_payload_debug.json

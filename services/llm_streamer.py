@@ -288,7 +288,7 @@ def process_llm_request(json_data, api_key, is_streaming):
             google_ai_request["systemInstruction"] = system_instruction
 
         if getattr(Config, "ENABLE_GOOGLE_SEARCH", False):
-            google_ai_request["tools"] = [{"google_search": {}}]
+            google_ai_request["tools"] = [{"googleSearch": {}}]
 
         # --- DIAGNOSTIC PAYLOAD LOGGING ---
         if debug_mode:

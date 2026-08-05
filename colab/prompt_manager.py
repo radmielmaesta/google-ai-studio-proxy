@@ -16,6 +16,8 @@ GIST_DESCRIPTION = "proxy-prompts"
 GIST_FILENAME = "prompts.json"
 CACHE_PATH = os.path.join(REPO_PATH, "prompts.json")
 
+DEBUG_MODE = False
+
 
 def check_environment():
     if not os.path.isdir(REPO_PATH):
@@ -31,6 +33,52 @@ before running this cell.
 \033[1;31m══════════════════════════════════════════════════════════════
 \033[0m""")
         sys.exit()
+
+
+import requests
+
+
+def _handle_error(e: Exception = None, response: requests.Response = None):
+    """Provides user-friendly error messages with optional technical debug output."""
+
+    # 1. User-Friendly Message Routing
+    if isinstance(e, requests.exceptions.ConnectionError):
+        print(
+            "❌ Connection failed. Please check your internet connection and try again."
+        )
+    elif isinstance(e, requests.exceptions.Timeout):
+        print("❌ The request timed out. GitHub's servers might be slow right now.")
+    elif response is not None:
+        # TARGETED CHANGE: Match statement for HTTP status codes
+        match response.status_code:
+            case code if code >= 500:
+                print(
+                    "❌ GitHub is currently experiencing server issues (5xx Error). Please try again later."
+                )
+            case 401 | 403:
+                print(
+                    "❌ Authentication failed or access was denied. Please re-authenticate."
+                )
+            case 404:
+                print("❌ The requested GitHub resource was not found.")
+            case _:
+                print(
+                    f"❌ An unexpected error occurred (Status Code: {response.status_code})."
+                )
+    else:
+        print("❌ An unexpected internal system error occurred.")
+
+    # 2. Detailed Technical Readout (Debug Mode)
+    if DEBUG_MODE:
+        print("\n--- DEBUG INFORMATION ---")
+        if e:
+            print(f"Exception Type: {type(e).__name__}")
+            print(f"Exception Message: {str(e)}")
+        if response is not None:
+            print(f"Status Code: {response.status_code}")
+            print(f"Headers: {dict(response.headers)}")
+            print(f"Response Body: {response.text}")
+        print("-------------------------\n")
 
 
 # --- Cache ---
@@ -56,13 +104,18 @@ def _headers(token):
 
 
 def _find_gist_id(token):
-    r = requests.get(
-        "https://api.github.com/gists",
-        headers=_headers(token),
-        params={"per_page": 100},
-    )
-    if r.status_code != 200:
+    try:
+        r = requests.get(
+            "https://api.github.com/gists",
+            headers=_headers(token),
+            params={"per_page": 100},
+            timeout=10,
+        )
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        _handle_error(e=e, response=getattr(e, "response", None))
         return None
+
     for g in r.json():
         if g.get("description") == GIST_DESCRIPTION:
             return g["id"]
@@ -73,15 +126,26 @@ def _read_gist(token):
     gid = _find_gist_id(token)
     if not gid:
         return None
-    r = requests.get(f"https://api.github.com/gists/{gid}", headers=_headers(token))
-    if r.status_code != 200:
+
+    try:
+        r = requests.get(
+            f"https://api.github.com/gists/{gid}", headers=_headers(token), timeout=10
+        )
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        _handle_error(e=e, response=getattr(e, "response", None))
         return None
+
     try:
         content = r.json()["files"][GIST_FILENAME]["content"]
         data = json.loads(content)
         _write_cache(data)
         return data
-    except Exception:
+    except Exception as e:
+        if DEBUG_MODE:
+            print(
+                f"\n--- DEBUG: JSON Parsing Error ---\n{str(e)}\n----------------------------------"
+            )
         return None
 
 
@@ -92,14 +156,29 @@ def write_gist(token, data):
         "files": {GIST_FILENAME: {"content": json.dumps(data, indent=2)}},
     }
     gid = _find_gist_id(token)
-    if gid:
-        requests.patch(
-            f"https://api.github.com/gists/{gid}", headers=_headers(token), json=payload
-        )
-    else:
-        requests.post(
-            "https://api.github.com/gists", headers=_headers(token), json=payload
-        )
+
+    try:
+        if gid:
+            r = requests.patch(
+                f"https://api.github.com/gists/{gid}",
+                headers=_headers(token),
+                json=payload,
+                timeout=10,
+            )
+        else:
+            r = requests.post(
+                "https://api.github.com/gists",
+                headers=_headers(token),
+                json=payload,
+                timeout=10,
+            )
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        _handle_error(e=e, response=getattr(e, "response", None))
+        # Important: Don't cache the data if the remote save failed
+        return
+
+    # Only write to local cache if the GitHub push was successful
     _write_cache(data)
 
 
@@ -114,43 +193,61 @@ def load_prompts(token):
 
 
 # --- OAuth Flow ---
+# TARGETED CHANGE: Remove debug parameter
 def start_auth_flow():
     print("One-time GitHub login — your prompts will be saved to a private Gist.\n")
 
-    r = requests.post(
-        "https://github.com/login/device/code",
-        data={"client_id": CLIENT_ID, "scope": "gist"},
-        headers={"Accept": "application/json"},
-    )
-    codes = r.json()
+    try:
+        r = requests.post(
+            "https://github.com/login/device/code",
+            data={"client_id": CLIENT_ID, "scope": "gist"},
+            headers={"Accept": "application/json"},
+            timeout=10,
+        )
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        # TARGETED CHANGE: Remove debug argument from call
+        _handle_error(e=e, response=getattr(e, "response", None))
+        return None
 
+    codes = r.json()
     _show_code_card(codes["user_code"], codes["verification_uri"])
 
     expires_min = codes.get("expires_in", 900) // 60
     print(f"Waiting for you to authorize… (code expires in {expires_min} min)\n")
 
+    # TARGETED CHANGE: Remove debug argument from call
     new_token = _poll_for_token(codes["device_code"], codes.get("interval", 5))
 
     if new_token:
         _show_token_card(new_token)
     else:
-        print("❌ Code expired. Rerun this cell to try again.")
+        print(
+            "❌ Authorization flow did not complete successfully. Rerun this cell to try again."
+        )
 
 
-def _poll_for_token(device_code, interval):
-    from urllib.parse import parse_qs
-
+# TARGETED CHANGE: Remove debug parameter
+def _poll_for_token(device_code: str, interval: int):
     while True:
         time.sleep(interval)
-        r = requests.post(
-            "https://github.com/login/oauth/access_token",
-            data={
-                "client_id": CLIENT_ID,
-                "device_code": device_code,
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            },
-            headers={"Accept": "application/json"},
-        )
+
+        try:
+            r = requests.post(
+                "https://github.com/login/oauth/access_token",
+                data={
+                    "client_id": CLIENT_ID,
+                    "device_code": device_code,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                },
+                headers={"Accept": "application/json"},
+                timeout=10,
+            )
+            r.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            # TARGETED CHANGE: Remove debug argument from call
+            _handle_error(e=e, response=getattr(e, "response", None))
+            return None
 
         if not r.text.strip():
             continue
@@ -165,10 +262,25 @@ def _poll_for_token(device_code, interval):
             return resp["access_token"]
 
         error = resp.get("error", "")
-        if error == "slow_down":
-            interval += 5
-        elif error == "expired_token":
-            return None
+
+        match error:
+            case "slow_down":
+                interval += 5
+            case "expired_token":
+                print("❌ Device code expired.")
+                return None
+            case "access_denied":
+                print("❌ Authorization was denied by the user.")
+                return None
+            case "authorization_pending":
+                continue
+            case _:
+                # TARGETED CHANGE: Reference the module-level config variable
+                if DEBUG_MODE:
+                    print(
+                        f"\n--- DEBUG: Unhandled OAuth State ---\nError Code: {error}\nFull Response: {resp}\n----------------------------------"
+                    )
+                return None
 
 
 # --- UI Elements & Rendering ---

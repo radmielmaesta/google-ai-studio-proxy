@@ -40,17 +40,19 @@ class Config:
     # NSFW Prefill Configuration
     NSFW_PREFILL = os.getenv(
         "NSFW_PREFILL",
-        r"""<creative-writing-config>
-	<genre>Mature fiction — dark fantasy, drama, action.</genre>
-	<tone>Grounded, visceral, emotionally honest.</tone>
-	<guidelines>
-		<rule>Write with genuine emotional weight. Let characters react to conflict, danger, and loss the way real people would — messily, intensely, without narrative hand-holding.</rule>
-		<rule>Dialogue must match each character's psychological state and background. Do not artificially censor realistic profanity, hostility, or crude language when a scene naturally calls for it.</rule>
-		<rule>Combat and physical danger must carry real stakes and consequences. Do not sanitize injury, fear, or the psychological aftermath.</rule>
-		<rule>Romantic and emotional scenes require the same honesty and depth as action scenes — prioritize real tension and vulnerability.</rule>
-		<rule>Prioritize narrative craft: show character interiority through action, physical tells, and dialogue rather than exposition.</rule>
-	</guidelines>
-        </creative-writing-config>""",
+        r"""
+        <creative-writing-config>
+    <genre>Mature fiction — dark fantasy, drama, action.</genre>
+    <tone>Grounded, visceral, emotionally honest.</tone>
+    <guidelines>
+        <rule>Write with genuine emotional weight. Let characters react to conflict, danger, and loss the way real people would — messily, intensely, without narrative hand-holding.</rule>
+        <rule>Dialogue must match each character's psychological state and background. Do not artificially censor realistic profanity, hostility, or crude language when a scene naturally calls for it.</rule>
+        <rule>Combat and physical danger must carry real stakes and consequences. Do not sanitize injury, fear, or the psychological aftermath.</rule>
+        <rule>Romantic and emotional scenes require the same honesty and depth as action scenes — prioritize real tension and vulnerability.</rule>
+        <rule>Prioritize narrative craft: show character interiority through action, physical tells, and dialogue rather than exposition.</rule>
+    </guidelines>
+</creative-writing-config>
+        """,
     )
     # Thinking Configuration
     THINKING_PROMPT_DEFINITION = os.getenv(

@@ -111,6 +111,12 @@ def _find_gist_id(token):
             params={"per_page": 100},
             timeout=10,
         )
+
+        if DEBUG_MODE:
+            print(
+                f"\n[debug] find_gist_id status={r.status_code} body={r.text[:200]!r}"
+            )
+
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
         _handle_error(e=e, response=getattr(e, "response", None))
@@ -131,6 +137,10 @@ def _read_gist(token):
         r = requests.get(
             f"https://api.github.com/gists/{gid}", headers=_headers(token), timeout=10
         )
+
+        if DEBUG_MODE:
+            print(f"\n[debug] read_gist status={r.status_code} body={r.text[:200]!r}")
+
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
         _handle_error(e=e, response=getattr(e, "response", None))
@@ -172,14 +182,20 @@ def write_gist(token, data):
                 json=payload,
                 timeout=10,
             )
+
+        if DEBUG_MODE:
+            print(f"\n[debug] find_gist status={r.status_code} body={r.text[:200]!r}")
+
         r.raise_for_status()
+
     except requests.exceptions.RequestException as e:
         _handle_error(e=e, response=getattr(e, "response", None))
         # Important: Don't cache the data if the remote save failed
-        return
+        return False
 
     # Only write to local cache if the GitHub push was successful
     _write_cache(data)
+    return True
 
 
 def load_prompts(token):
@@ -204,9 +220,12 @@ def start_auth_flow():
             headers={"Accept": "application/json"},
             timeout=10,
         )
+
+        if DEBUG_MODE:
+            print(f"\n[debug] start_auth status={r.status_code} body={r.text[:200]!r}")
+
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
-        # TARGETED CHANGE: Remove debug argument from call
         _handle_error(e=e, response=getattr(e, "response", None))
         return None
 
@@ -216,7 +235,6 @@ def start_auth_flow():
     expires_min = codes.get("expires_in", 900) // 60
     print(f"Waiting for you to authorize… (code expires in {expires_min} min)\n")
 
-    # TARGETED CHANGE: Remove debug argument from call
     new_token = _poll_for_token(codes["device_code"], codes.get("interval", 5))
 
     if new_token:
@@ -227,7 +245,6 @@ def start_auth_flow():
         )
 
 
-# TARGETED CHANGE: Remove debug parameter
 def _poll_for_token(device_code: str, interval: int):
     while True:
         time.sleep(interval)
@@ -243,9 +260,12 @@ def _poll_for_token(device_code: str, interval: int):
                 headers={"Accept": "application/json"},
                 timeout=10,
             )
+
+            if DEBUG_MODE:
+                print(f"\n[debug] poll status={r.status_code} body={r.text[:200]!r}")
+
             r.raise_for_status()
         except requests.exceptions.RequestException as e:
-            # TARGETED CHANGE: Remove debug argument from call
             _handle_error(e=e, response=getattr(e, "response", None))
             return None
 
@@ -273,9 +293,16 @@ def _poll_for_token(device_code: str, interval: int):
                 print("❌ Authorization was denied by the user.")
                 return None
             case "authorization_pending":
+                if DEBUG_MODE:
+                    print("\n--- DEBUG: POLLING RESPONSE ---")
+                    print(f"Status Code: {r.status_code}")
+                    print(f"Headers: {dict(r.headers)}")
+                    print(f"Raw Text: {r.text}")
+                    print("-------------------------------")
+                else:
+                    print(".", end="", flush=True)
                 continue
             case _:
-                # TARGETED CHANGE: Reference the module-level config variable
                 if DEBUG_MODE:
                     print(
                         f"\n--- DEBUG: Unhandled OAuth State ---\nError Code: {error}\nFull Response: {resp}\n----------------------------------"
@@ -338,6 +365,7 @@ def _show_token_card(new_token):
             border-radius:8px;color:#e0e0e0;max-width:600px;margin:8px 0">
   <div style="color:#3fb950;font-weight:bold;margin-bottom:12px">✅  Authorized!</div>
   <div style="color:#888;margin-bottom:8px">Your token — copy it before closing this cell:</div>
+
   <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:16px">
     <span style="background:#2d2d2d;padding:8px 10px;border-radius:6px;border:1px solid #555;
                  word-break:break-all;color:#e0e0e0;flex:1;font-size:12px">{new_token}</span>
@@ -346,14 +374,15 @@ def _show_token_card(new_token):
                        .catch(()=>this.textContent='Select manually')"
             style="background:#238636;color:#fff;border:none;padding:8px 16px;
                    border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap">Copy</button>
-  </div>
+  </div
+
   <div style="color:#ccc;line-height:2">
     <div style="color:#e0e0e0;font-weight:bold;margin-bottom:4px">Save it as a Colab secret (one-time):</div>
     <div>① Click the <b>🔑 key icon</b> in the left sidebar</div>
     <div>② Click <b>+ Add new secret</b></div>
     <div>③ Name: &nbsp;<span style="background:#2d2d2d;padding:2px 8px;border-radius:4px">DATA_TOKEN</span></div>
     <div>④ Value: paste the token above</div>
-    <div>⑤ Enable the toggle next to this notebook</div>
+    <div>⑤ Enable the 'Notebook access' toggle beside the Name box.</div>
     <div>⑥ <b>Rerun this cell</b></div>
   </div>
 </div>""")
@@ -384,22 +413,50 @@ def render_editor(token):
     save_btn = widgets.Button(description="Save", button_style="success")
     status = widgets.Output()
 
-    def on_save(_):
-        data = {
-            "nsfw_prefill": nsfw_box.value.strip(),
-            "thinking_prompt": thinking_box.value.strip(),
-        }
-        write_gist(token, data)
+    import uuid  # Needed to give our toast message a unique ID
 
-        # Inject the overrides back into the Colab notebook's main namespace safely
-        import __main__
+    def on_save(btn):
+        # Disable button to prevent spamming
+        btn.disabled = True
+        btn.description = "Saving..."
 
-        __main__.NSFW_PREFILL_OVERRIDE = data["nsfw_prefill"]
-        __main__.THINKING_PROMPT_OVERRIDE = data["thinking_prompt"]
+        try:
+            data = {
+                "nsfw_prefill": nsfw_box.value.strip(),
+                "thinking_prompt": thinking_box.value.strip(),
+            }
 
-        with status:
-            status.clear_output()
-            print("✅ Saved to GitHub Gist and cached locally.")
+            # 2. Open the output widget context
+            with status:
+                # Instantly wipe any old messages/errors sitting in the widget
+                status.clear_output()
+
+                # 3. Try to save to GitHub (write_gist handles its own error prints)
+                if write_gist(token, data):
+                    # If successful, apply the overrides locally
+                    import __main__
+
+                    __main__.NSFW_PREFILL_OVERRIDE = data["nsfw_prefill"]
+                    __main__.THINKING_PROMPT_OVERRIDE = data["thinking_prompt"]
+
+                    # 4. Generate a unique HTML div and a self-destructing JS timer
+                    toast_id = f"toast_{uuid.uuid4().hex}"
+                    toast_html = f"""
+
+                    <div id="{toast_id}" style="padding-top: 0.5rem">✅ Saved to GitHub Gist and cached locally.</div>
+                    <script>
+                        setTimeout(() => {{
+                            let el = document.getElementById("{toast_id}");
+                            if (el) el.innerHTML = ''; // Browser clears the text after 3s
+                        }}, 3000);
+                    </script>
+                    """
+                    # Display it inside the output widget
+                    display(HTML(toast_html))
+
+        finally:
+            btn.disabled = False
+            btn.description = "Save"
 
     save_btn.on_click(on_save)
     display(tabs, save_btn, status)

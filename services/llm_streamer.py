@@ -151,7 +151,7 @@ def build_gemini_payload(messages, selected_model):
         constraint_text += f"\n\n[SYSTEM REMINDER: {Config.NSFW_PREFILL}]"
 
     # NEW: Fetch the dynamically formatted reminder
-    if getattr(Config, "ENABLE_THINKING", False) and getattr(Config, "REMINDER", ""):
+    if getattr(Config, "ENABLE_THINKING", False):
         safe_reminder = Config.get_formatted_reminder(is_native_thinking)
         constraint_text += f"\n\n{safe_reminder}"
 

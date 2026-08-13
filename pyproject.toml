@@ -1,0 +1,23 @@
+[project]
+name = "google-ai-studio-proxy"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Radmiel Maesta"}
+]
+requires-python = "^3.10"
+dependencies = [
+    "flask (>=3.1.3,<4.0.0)",
+    "flask-cloudflared (>=0.0.15,<0.0.16)",
+    "flask-cors (>=6.0.5,<7.0.0)",
+    "flask-localtunnel (>=1.0.7,<2.0.0)",
+    "gevent (>=26.8.0,<27.0.0)",
+    "pyngrok (>=8.1.2,<9.0.0)",
+    "python-dotenv (>=1.2.2,<2.0.0)",
+    "requests (==2.32.4)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

@@ -1,8 +1,46 @@
 """
 Text parsing utilities for handling thinking and response content.
+
+Refactor notes vs. the original:
+  - One shared primitive (_dangling_prefix_len) decides "does the tail of
+    this buffer look like the start of a delimiter we care about" instead
+    of three independently-written heuristics (30-char check, 40-char
+    check, and a generic "any '<' within 15 chars" check) that drifted
+    from each other and caused the original leak bug.
+  - States are an Enum instead of raw strings.
+  - The in_response sliding-buffer lookahead now only holds back text that
+    could actually be forming "</response>", instead of holding back any
+    '<...' pattern (so in-story text like "<3" or "<em>" streams normally).
 """
 
+from enum import Enum, auto
+
 from core.config import Config
+
+OPEN_THINK = "<proxy_reasoning>"
+CLOSE_THINK = "</proxy_reasoning>"
+OPEN_RESPONSE = "<response>"
+CLOSE_RESPONSE = "</response>"
+
+def _dangling_prefix_len(buffer, *delimiters):
+    """
+    Returns the length of the longest suffix of `buffer` that is a proper
+    prefix of ANY given delimiter. That suffix might be the start of a
+    delimiter that hasn't fully arrived yet in this chunk, so it isn't
+    safe to treat as ordinary text yet -- hold it back and wait for more.
+
+    Unlike a generic "any '<' near the end" heuristic, this only holds
+    back text that could genuinely still become one of our delimiters.
+    """
+    if not buffer:
+        return 0
+    longest_possible = max(len(d) for d in delimiters) - 1
+    max_check = min(longest_possible, len(buffer))
+    for i in range(max_check, 0, -1):
+        tail = buffer[-i:]
+        if any(d.startswith(tail) for d in delimiters):
+            return i
+    return 0
 
 
 def extract_thinking_and_response(content):
@@ -11,14 +49,11 @@ def extract_thinking_and_response(content):
     Keeps </proxy_reasoning> and <response> tags in the output to maintain them in chat history.
     Returns: (thinking_content, final_response, parsing_success)
     """
+    think_start = content.find(OPEN_THINK)
+    think_end = content.find(CLOSE_THINK)
+    response_start = content.find(OPEN_RESPONSE)
+    response_end = content.find(CLOSE_RESPONSE)
 
-    # First, check if we have the ideal format
-    think_start = content.find("<proxy_reasoning>")
-    think_end = content.find("</proxy_reasoning>")
-    response_start = content.find("<response>")
-    response_end = content.find("</response>")
-
-    # Ideal case: all tags present in correct order
     if (
         think_start != -1
         and think_end != -1
@@ -26,39 +61,26 @@ def extract_thinking_and_response(content):
         and response_end != -1
     ):
         if think_start < think_end < response_start < response_end:
-            thinking_content = content[think_start + 17 : think_end].strip()
-            # Keep </proxy_reasoning> and everything after in the response for chat history
-            tag_length = len("</proxy_reasoning>")
-            final_response = content[think_end + tag_length :].strip()
+            thinking_content = content[think_start + len(OPEN_THINK) : think_end].strip()
+            final_response = content[think_end + len(CLOSE_THINK) :].strip()
             return thinking_content, final_response, True
 
-    # Fallback 1: Look for </proxy_reasoning> and treat everything before as thinking
     if think_end != -1:
-        # Extract everything up to </proxy_reasoning> as thinking (excluding the tag)
         thinking_part = content[:think_end]
-        # Remove <proxy_reasoning> tag if present
-        if "<proxy_reasoning>" in thinking_part:
-            thinking_part = thinking_part.split("<proxy_reasoning>", 1)[1]
+        if OPEN_THINK in thinking_part:
+            thinking_part = thinking_part.split(OPEN_THINK, 1)[1]
         thinking_content = thinking_part.strip()
-
-        # Keep </proxy_reasoning> and everything after as the response
-        tag_length = len("</proxy_reasoning>")
-        final_response = content[think_end + tag_length :].strip()
+        final_response = content[think_end + len(CLOSE_THINK) :].strip()
 
         if Config.ENABLE_THINKING and Config.DISPLAY_THINKING_IN_COLAB:
             print("INFO: Used lenient parsing with </proxy_reasoning> marker")
 
         return thinking_content, final_response, False
 
-    # Fallback 2: Look for <response> alone
     if response_start != -1:
-        # Everything before <response> is thinking
         thinking_content = content[:response_start].strip()
-        # Remove <proxy_reasoning> tag if present
-        if "<proxy_reasoning>" in thinking_content:
-            thinking_content = thinking_content.split("<proxy_reasoning>", 1)[1].strip()
-
-        # Keep <response> and everything after as the response
+        if OPEN_THINK in thinking_content:
+            thinking_content = thinking_content.split(OPEN_THINK, 1)[1].strip()
         final_response = content[response_start:].strip()
 
         if Config.ENABLE_THINKING and Config.DISPLAY_THINKING_IN_COLAB:
@@ -66,7 +88,6 @@ def extract_thinking_and_response(content):
 
         return thinking_content, final_response, False
 
-    # No tags found - treat entire content as response
     if Config.ENABLE_THINKING:
         print(
             "WARNING: No thinking separation tags found, treating entire content as response"
@@ -75,19 +96,25 @@ def extract_thinking_and_response(content):
     return None, content, False
 
 
+class _State(Enum):
+    DETECTING = auto()
+    SEARCHING = auto()
+    WAITING_FOR_RESPONSE = auto()
+    IN_RESPONSE = auto()
+    FINISHED = auto()
+
+
 class StreamingParser:
     def __init__(self, display_thinking_in_colab):
         self.reset()
         self.display_thinking_in_colab = display_thinking_in_colab
 
     def reset(self):
-        # Start in a detection phase, NOT immediate lockdown
-        self.state = "detecting"
+        self.state = _State.DETECTING
         self.thinking_content = ""
         self.response_content = ""
         self.buffer = ""
         self.all_content = ""
-        # --- NEW: First-Text Latch ---
         self.is_first_text_chunk = True
 
     def process_chunk(self, chunk_content):
@@ -97,129 +124,123 @@ class StreamingParser:
         thinking_for_colab = ""
 
         while True:
-            if self.state == "detecting":
-                if "<proxy_reasoning>" in self.buffer:
-                    # Explicit tags detected, go into strict lockdown
-                    self.state = "searching"
+            if self.state == _State.DETECTING:
+                if OPEN_THINK in self.buffer:
+                    self.state = _State.SEARCHING
                     continue
+                # No budget by design: an unbounded model preamble (e.g. an
+                # unrequested "*Internal Thought:*" ramble) can't be told
+                # apart from "the tag is still forming" by length alone.
+                # Wait for either the tag or end-of-stream (see finalize()).
+                break
 
-                # Strip leading whitespace to accurately check the first visible character
-                stripped_buffer = self.buffer.lstrip()
+            elif self.state == _State.SEARCHING:
+                # No budget here by design: if the model never closes the
+                # reasoning block (e.g. truncated by MAX_TOKENS), we deliberately
+                # swallow it rather than ever leak raw chain-of-thought text.
+                if CLOSE_THINK in self.buffer:
+                    parts = self.buffer.split(CLOSE_THINK, 1)
 
-                if stripped_buffer.startswith("<"):
-                    # The stream is starting with a bracket. It might be building our tag.
-                    # Wait patiently, but implement a 30-character fail-safe just in case.
-                    if len(self.buffer) >= 30:
-                        self.buffer = self.buffer.replace("<response>", "").replace(
-                            "<respon", ""
-                        )
-                        self.state = "in_response"
-                        continue
-                    else:
-                        # Wait for the next chunk to complete the tag
-                        break
-
-                elif len(stripped_buffer) > 0:
-                    # Starting with normal text, strip any accidental leading newlines
-                    # This is definitely not a proxy_reasoning block. Open the gates instantly!
-                    self.buffer = self.buffer.lstrip()
-                    self.state = "in_response"
-                    continue
-
-                else:
-                    # The buffer is still empty or just whitespace. Keep waiting.
-                    break
-
-            elif self.state == "searching":
-                # STRICT LOCKDOWN: We are inside the explicit thought.
-                if "</proxy_reasoning>" in self.buffer:
-                    parts = self.buffer.split("</proxy_reasoning>", 1)
-
-                    # Extract the thinking part for the terminal
-                    thinking_part = self.all_content[
-                        : self.all_content.find("</proxy_reasoning>")
-                    ]
-                    if "<proxy_reasoning>" in thinking_part:
-                        thinking_part = thinking_part.split("<proxy_reasoning>", 1)[1]
+                    thinking_part = self.all_content[: self.all_content.find(CLOSE_THINK)]
+                    if OPEN_THINK in thinking_part:
+                        thinking_part = thinking_part.split(OPEN_THINK, 1)[1]
                     self.thinking_content = thinking_part.strip()
 
                     if self.display_thinking_in_colab:
                         thinking_for_colab = self.thinking_content
 
-                    # Drop </proxy_reasoning> and move into the Airlock
                     self.buffer = parts[1]
-                    self.state = "waiting_for_response"
+                    self.state = _State.WAITING_FOR_RESPONSE
                     continue
                 else:
-                    # Eat the text. Send absolutely nothing to JanitorAI.
                     break
 
-            elif self.state == "waiting_for_response":
-                # AIRLOCK: Now we actively look for the real <response> tag to delete it.
-                if "<response>" in self.buffer:
-                    parts = self.buffer.split("<response>", 1)
-                    # .lstrip() eats all \n and spaces sitting between <response> and the story
+            elif self.state == _State.WAITING_FOR_RESPONSE:
+                if OPEN_RESPONSE in self.buffer:
+                    parts = self.buffer.split(OPEN_RESPONSE, 1)
                     self.buffer = parts[1].lstrip()
-                    self.state = "in_response"
+                    self.state = _State.IN_RESPONSE
                     continue
-                elif len(self.buffer) > 40:
-                    # If 40 chars pass without a response tag, it forgot. Open the gates.
-                    self.buffer = (
-                        self.buffer.replace("<response>", "")
-                        .replace("<respon", "")
-                        .lstrip()
-                    )  # Clean leading newlines here as well
-                    self.state = "in_response"
-                    continue
-                else:
-                    break
+                # No budget here either, same reasoning as DETECTING.
+                break
 
-            elif self.state == "in_response":
-                # 1. THE LATCH: Catch and destroy top ghost newlines before they escape
+            elif self.state == _State.IN_RESPONSE:
                 if self.is_first_text_chunk:
                     self.buffer = self.buffer.lstrip()
                     if not self.buffer:
-                        break  # Wait for actual text to arrive
+                        break
                     self.is_first_text_chunk = False
 
-                # 2. ENDGAME CATCHER: The closing tag has arrived
-                if "</response>" in self.buffer:
-                    parts = self.buffer.split("</response>", 1)
-                    # The .rstrip() here permanently destroys bottom ghost newlines!
+                if CLOSE_RESPONSE in self.buffer:
+                    parts = self.buffer.split(CLOSE_RESPONSE, 1)
                     content_to_send = parts[0].rstrip()
                     self.response_content += content_to_send
                     self.buffer = ""
-                    self.state = "finished"
+                    self.state = _State.FINISHED
                     break
 
-                # 3. SLIDING BUFFER: Hold trailing whitespace and partial tags
-                else:
-                    # Look at the buffer without its trailing whitespace
-                    stripped_buf = self.buffer.rstrip()
+                # Hold back from the end of the buffer: first any tail that
+                # could still be forming CLOSE_RESPONSE (not any arbitrary
+                # '<' -- so in-story markup like "<3" or "<em>" isn't
+                # needlessly delayed), THEN any whitespace immediately
+                # before that. The whitespace has to be included in the
+                # hold too: until we know whether the dangling tail turns
+                # into a real close tag, we can't know yet whether that
+                # whitespace is trailing (needs rstrip) or just mid-text.
+                buf = self.buffer
+                hold_from = len(buf) - _dangling_prefix_len(buf, CLOSE_RESPONSE)
+                while hold_from > 0 and buf[hold_from - 1].isspace():
+                    hold_from -= 1
 
-                    if not stripped_buf:
-                        # The buffer is currently ONLY whitespace. Hold it in memory.
-                        break
-
-                    # We have real text. Check if a tag might be forming at the end.
-                    last_bracket = stripped_buf.rfind("<")
-
-                    if last_bracket != -1 and len(stripped_buf) - last_bracket < 15:
-                        # A bracket is dangerously close to the end. Hold everything from the bracket onward!
-                        content_to_send = self.buffer[:last_bracket]
-                        self.buffer = self.buffer[last_bracket:]
-                    else:
-                        # No tag forming. Send the safe text, but HOLD the trailing whitespace in memory!
-                        content_to_send = stripped_buf
-                        self.buffer = self.buffer[len(stripped_buf) :]
-
+                content_to_send = buf[:hold_from]
+                self.buffer = buf[hold_from:]
+                if content_to_send:
                     self.response_content += content_to_send
                 break
 
-            elif self.state == "finished":
+            elif self.state == _State.FINISHED:
                 self.response_content = self.response_content.rstrip()
                 self.buffer = ""
                 break
 
-        is_complete = self.state == "finished"
+        is_complete = self.state == _State.FINISHED
         return content_to_send, thinking_for_colab, is_complete
+
+    def finalize(self):
+        """
+        Call this once when the underlying stream ends (finish_reason
+        received) if is_complete was never True. Handles every state that
+        never got its expected closing delimiter, instead of guessing with
+        a per-state character budget.
+        Returns: (content_to_send, thinking_for_colab, is_complete=True)
+        """
+        if self.state == _State.FINISHED:
+            return "", "", True
+
+        if self.state == _State.IN_RESPONSE:
+            # Model finished without ever sending </response> -- flush
+            # whatever was safely held back.
+            leftover = self.buffer.rstrip()
+            self.response_content += leftover
+            self.buffer = ""
+            self.state = _State.FINISHED
+            return leftover, "", True
+
+        if self.state == _State.SEARCHING:
+            # Reasoning block never closed. By design we never leak partial
+            # chain-of-thought, so this turn produces no visible text.
+            self.state = _State.FINISHED
+            return "", "", True
+
+        # DETECTING or WAITING_FOR_RESPONSE: the stream ended without ever
+        # matching our expected tag shape at all (e.g. an unbounded
+        # preamble, or a model that skipped the tags entirely). Fall back
+        # to the same lenient logic the non-streaming path already trusts,
+        # instead of a second, different heuristic.
+        thinking, response, _ = extract_thinking_and_response(self.all_content)
+        self.thinking_content = thinking or ""
+        self.response_content = response
+        self.buffer = ""
+        self.state = _State.FINISHED
+        thinking_for_colab = thinking if (self.display_thinking_in_colab and thinking) else ""
+        return response, thinking_for_colab, True

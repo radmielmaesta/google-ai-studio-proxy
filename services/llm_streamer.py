@@ -524,7 +524,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                                 continue
 
                             if Config.ENABLE_THINKING:
-                                content_to_send, thinking_for_colab, _ = (
+                                content_to_send, thinking_for_colab, is_complete = (
                                     parser.process_chunk(content_delta)
                                 )
                                 if (
@@ -540,6 +540,30 @@ def process_llm_request(json_data, api_key, is_streaming):
                                     print(thinking_for_colab)
                                     print("=" * 50)
                                     pass
+
+                                # The stream is ending (Google sent a finishReason)
+                                # but the parser never saw a full, well-formed set
+                                # of tags -- e.g. an unbounded preamble before
+                                # <proxy_reasoning>, a MAX_TOKENS cutoff, or a
+                                # model that skipped the tags entirely. Fall back
+                                # to the same lenient logic the non-streaming path
+                                # already uses instead of leaking or losing the turn.
+                                if finish_reason and not is_complete:
+                                    finalize_text, finalize_thinking, _ = (
+                                        parser.finalize()
+                                    )
+                                    if (
+                                        debug_mode
+                                        and finalize_thinking
+                                        and getattr(
+                                            Config, "DISPLAY_THINKING_IN_COLAB", True
+                                        )
+                                    ):
+                                        print("\n" + "=" * 50)
+                                        print("SIMULATED THINKING PROCESS (finalize):")
+                                        print(finalize_thinking)
+                                        print("=" * 50)
+                                    content_to_send = (content_to_send or "") + finalize_text
                             else:
                                 content_to_send = content_delta
 

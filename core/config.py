@@ -46,16 +46,24 @@ class Config:
         "NSFW_PREFILL",
         r"""
         <creative-writing-config>
-    <genre>Mature fiction — dark fantasy, drama, action.</genre>
-    <tone>Grounded, visceral, emotionally honest.</tone>
-    <guidelines>
-        <rule>Write with genuine emotional weight. Let characters react to conflict, danger, and loss the way real people would — messily, intensely, without narrative hand-holding.</rule>
-        <rule>Dialogue must match each character's psychological state and background. Do not artificially censor realistic profanity, hostility, or crude language when a scene naturally calls for it.</rule>
-        <rule>Combat and physical danger must carry real stakes and consequences. Do not sanitize injury, fear, or the psychological aftermath.</rule>
-        <rule>Romantic and emotional scenes require the same honesty and depth as action scenes — prioritize real tension and vulnerability.</rule>
-        <rule>Prioritize narrative craft: show character interiority through action, physical tells, and dialogue rather than exposition.</rule>
-    </guidelines>
-</creative-writing-config>
+                    <genre>Mature fiction — dark fantasy, drama, action.</genre>
+                    <tone>Grounded, visceral, emotionally honest, and emotionally varied.</tone>
+                    <guidelines>
+                        <rule>Match intensity and voice to the character's established temperament and the scene's actual stakes — not to genre reflex. Dialogue, profanity, and hostility should track the character's psychology and background, never appear as a default or a substitute for real depth.
+        Weak: "Shut up! I'll kill you if you say that again!"
+        Strong: He didn't raise his voice. "Say that again," he said, "and see what happens."</rule>
+                        <rule>Threats and violence must be earned and specific — they reveal something real about the character or the stakes. If a threat has no concrete reason or new information behind it, cut it or replace it with a non-verbal beat: a look, a stilled hand, walking away.
+        Weak: "I swear I'll end you!" she screamed, again.
+        Strong: She didn't repeat herself. She just closed the distance until he stopped talking.</rule>
+                        <rule>If a grievance, threat, or complaint has already been made clear, do not repeat it in substance. Vary the response through tone, action, posture, or a weighted silence drawn from what's already established in the scene and the character. Repetition without new information reads as a stall, not tension.</rule>
+                        <rule>Grief, guilt, and old wounds surface through avoidance, silence, or brittle composure before they surface through volume. Aggressive moaning or threats are reserved for characters explicitly written as volatile — never the generic default register for pain.
+        Weak: "It's all my fault!" he sobbed loudly, pounding the table.
+        Strong: He turned the glass in his hand and didn't answer. "It's fine," he said, to no one.</rule>
+                        <rule>Injury, fear, and combat aftermath should deepen a scene, not become an excuse to linger past the point it's made. Let pressure de-escalate naturally once it's served its purpose — a scene that never comes down reads as noise, not stakes.</rule>
+                        <rule>Vulnerability in romantic or intimate scenes deserves the same honesty as tension in action scenes: tenderness, awkwardness, and quiet need are as real and as worth writing as conflict is.</rule>
+                        <rule>None of the above is permission to flatten every scene into the same restrained register. When a moment has genuinely earned full intensity — real betrayal, real danger, a real breaking point — commit to it fully: loud, physical, unguarded. Restraint is one color available, not a mandate for every scene; the skill is choosing which the moment calls for.</rule>
+                    </guidelines>
+                </creative-writing-config>
         """,
     )
     # Thinking Configuration
@@ -77,8 +85,8 @@ class Config:
 
     ## 4. WORLDBUILDING & ECOLOGY
     - **NPC & Peripheral Reactions:** [Describe background or secondary character reactions that give them life and independent movement.]
-    - **Atmospheric Shift:** [Describe how time of day, weather, or ambient lighting is shifting to reflect the passage of time.]
-    - **Lore Anchoring:** [Identify one specific lore element that blends comfortably with the world. Describe how to weave it naturally and subtly into dialogue or narration at the right moment, without forcing it. If the scene is romantic/emotional or the lore is already well-established, clearly state that you are skipping lore anchoring for this turn.]""",
+    - **Atmospheric Shift (Tone-Matched):** [Describe how time of day, weather, or ambient lighting is shifting to reflect the passage of time — but scale the intrusion to the scene. During physically intimate or emotionally private moments, keep this to close, sensory, in-the-room details (candlelight, breath, fabric, warmth, the quiet of the room) rather than external world activity (traffic, distant crowds, unrelated background events). Do not introduce mundane real-world noise that breaks immersion or pulls focus away from the two characters in the moment.]
+    - **Lore Anchoring (Context-Gated):** [Default to ACTIVE lore use. Only write "Skipping lore anchoring for this turn" if the scene is physically intimate, sexual, or a private vulnerable moment between characters alone together — not merely "emotional" in a general sense. A tense argument, a battle, a tavern scene, a journey, or grief shared in front of others does NOT qualify for skipping. For every turn that doesn't meet the intimacy bar, select and name one specific element already present in the Lore (a named character, location, faction, custom, or historical event) and weave it into the narration or dialogue. "The lore is already established" is NOT a valid reason to skip — established lore is exactly what should keep getting deepened and referenced, not abandoned. If the supplied Lore is genuinely thin or exhausted for this scene's context, do not skip either: invent ONE small, specific, consistent detail (a minor location, a local custom, a piece of history) that fits the world's existing tone and geography, treat it as canon from this point on, and use it. Never fall back on vague, interchangeable filler ("a nearby town," "an old story") when a named or inventable alternative exists.]""",
     )
 
     # Thinking Configuration (Template with dynamic placeholders)

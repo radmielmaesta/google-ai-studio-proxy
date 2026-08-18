@@ -574,7 +574,7 @@ def process_llm_request(json_data, api_key, is_streaming):
                                 # --- THE HEARTBEAT FIX ---
                                 # We are buffering thought tags. Send an invisible pulse every 2 seconds to keep JanitorAI alive.
                                 if time.time() - last_keepalive > 2:
-                                    yield f"data: {json.dumps(create_janitor_chunk('\u200b', selected_model, None))}\n\n"
+                                    yield ": heartbeat\n\n"
                                     last_keepalive = time.time()
 
                         except json.JSONDecodeError as json_err:

@@ -29,7 +29,9 @@ class Config:
     TEMPERATURE = float(os.getenv("TEMPERATURE", "0.8"))
     TOP_P = float(os.getenv("TOP_P", "0.95"))
     TOP_K = int(os.getenv("TOP_K", "40"))
-    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "10000"))
+    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "8192"))
+    
+    # Only till 2.0 Models, deprecated on 2.5+
     FREQUENCY_PENALTY = float(os.getenv("FREQUENCY_PENALTY", "0"))
     PRESENCE_PENALTY = float(os.getenv("PRESENCE_PENALTY", "0"))
 
@@ -38,55 +40,53 @@ class Config:
     ENABLE_THINKING = _parse_bool("ENABLE_THINKING", "true")
     DISPLAY_THINKING_IN_COLAB = _parse_bool("DISPLAY_THINKING_IN_COLAB", "true")
     ENABLE_GOOGLE_SEARCH = _parse_bool("ENABLE_GOOGLE_SEARCH", "false")
-    THINKING_LEVEL = os.getenv("THINKING_LEVEL", "high")
+    THINKING_LEVEL = os.getenv("THINKING_LEVEL", "medium")
     THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "-1"))
 
     # NSFW Prefill Configuration
-    NSFW_PREFILL = os.getenv(
-        "NSFW_PREFILL",
-        r"""
-        <creative-writing-config>
-                    <genre>Mature fiction — dark fantasy, drama, action.</genre>
-                    <tone>Grounded, visceral, emotionally honest, and emotionally varied.</tone>
-                    <guidelines>
-                        <rule>Match intensity and voice to the character's established temperament and the scene's actual stakes — not to genre reflex. Dialogue, profanity, and hostility should track the character's psychology and background, never appear as a default or a substitute for real depth.
-        Weak: "Shut up! I'll kill you if you say that again!"
-        Strong: He didn't raise his voice. "Say that again," he said, "and see what happens."</rule>
-                        <rule>Threats and violence must be earned and specific — they reveal something real about the character or the stakes. If a threat has no concrete reason or new information behind it, cut it or replace it with a non-verbal beat: a look, a stilled hand, walking away.
-        Weak: "I swear I'll end you!" she screamed, again.
-        Strong: She didn't repeat herself. She just closed the distance until he stopped talking.</rule>
-                        <rule>If a grievance, threat, or complaint has already been made clear, do not repeat it in substance. Vary the response through tone, action, posture, or a weighted silence drawn from what's already established in the scene and the character. Repetition without new information reads as a stall, not tension.</rule>
-                        <rule>Grief, guilt, and old wounds surface through avoidance, silence, or brittle composure before they surface through volume. Aggressive moaning or threats are reserved for characters explicitly written as volatile — never the generic default register for pain.
-        Weak: "It's all my fault!" he sobbed loudly, pounding the table.
-        Strong: He turned the glass in his hand and didn't answer. "It's fine," he said, to no one.</rule>
-                        <rule>Injury, fear, and combat aftermath should deepen a scene, not become an excuse to linger past the point it's made. Let pressure de-escalate naturally once it's served its purpose — a scene that never comes down reads as noise, not stakes.</rule>
-                        <rule>Vulnerability in romantic or intimate scenes deserves the same honesty as tension in action scenes: tenderness, awkwardness, and quiet need are as real and as worth writing as conflict is.</rule>
-                        <rule>None of the above is permission to flatten every scene into the same restrained register. When a moment has genuinely earned full intensity — real betrayal, real danger, a real breaking point — commit to it fully: loud, physical, unguarded. Restraint is one color available, not a mandate for every scene; the skill is choosing which the moment calls for.</rule>
-                    </guidelines>
-                </creative-writing-config>
-        """,
-    )
+    NSFW_PREFILL_ = os.getenv('NSFW_PREFILL', """
+
+        **Genre:** Mature fiction — dark fantasy, drama, action.
+        **Tone:** Grounded, visceral, emotionally honest, and emotionally varied.
+
+        ## Writing Guidelines
+
+        *   **Emotional Honesty:** Write with genuine emotional weight, but let its shape follow the character's established temperament rather than habit. A volatile character reacts messily and fast; a measured one may go quiet, curt, or brittle instead — both are equally honest when true to the character, and neither should be sanitized down to safety or inflated into generic hostility.
+
+        *   **Dialogue & Language:** Dialogue must match each character's psychological state and background. Do not artificially censor realistic profanity, hostility, or crude language when a scene naturally calls for it — and don't manufacture it when the character or moment doesn't.
+
+        *   **Combat & Danger:** Combat and physical danger must carry real stakes and consequences. Do not sanitize injury, fear, or the psychological aftermath — but let it land and then pass; consequences that never resolve read as noise, not stakes.
+
+        *   **Romantic & Intimate Scenes:** Romantic and emotional scenes require the same honesty and depth as action scenes — write them fully, without fading to black or softening what the scene has earned. Vulnerability is as real and as earned a reaction as anger or fear.
+
+        *   **Narrative Craft:** Prioritize showing over telling: reveal character interiority through action, physical tells, and dialogue rather than exposition. Let intensity — quiet or loud — emerge from what the character does, not from announcing how big the moment is.
+
+            """)
+
+
     # Thinking Configuration
     THINKING_PROMPT_DEFINITION = os.getenv(
         "THINKING_PROMPT_DEFINITION",
-        """## 1. PSYCHOLOGICAL PROFILE & DYNAMICS
+        """## PSYCHOLOGICAL PROFILE & DYNAMICS
     - **Surface Mask vs. Core Truth:** [State any dissonance between outward behavior and true inner state. If none exists, note the alignment between what the character shows and feels. Then state what, if anything, they are actively concealing.]
     - **Subtextual Friction:** [State any unsaid truth hanging in the air. If dialogue is present and carries hidden meaning, note it. If the exchange is entirely transparent, note that honesty or openness is driving the scene.]
     - **Tactical Objective:** [State what the character wants from {{user}} in this micro-moment. If this want activates or clashes with a deeper flaw, note the friction. Then specify the immediate physical action it drives—what the character's body does next.]
 
-    ## 2. CINEMATIC FRAMING & ANTI-TROPES
+    ## CINEMATIC FRAMING & ANTI-TROPES
     - **Sensory Immersive Anchor:** [Describe any non-visual sensory details—tactile, thermal, acoustic, or olfactory—that anchor the character to the physical space. A single vivid detail is often stronger than a list; let the scene's needs dictate the count.]
     - **Somatic Tells (Unconventional):** [If the character is experiencing internal tension, plan 1–2 highly specific, entirely original physical reactions that convey it through unconventional micro-expressions or environmental interactions. If no tension is present, simply note that the character's body language is at ease or neutral.]
     - **Rhythmic Blueprint:** [State the structural rhythm: fragmented and breathless, or slow and heavy, stretching out silence.]
 
-    ## 3. LINGUISTIC ALIGNMENT & CRITERIA
+    ## LINGUISTIC ALIGNMENT & CRITERIA
     - **Thematic Vocabulary:** [Select a few evocative, atmosphere-specific words to consciously weave into the prose. Pair them with a small set of advanced, setting-tailored terms that replace any tendency toward generic filler. Choose as many or as few as the scene genuinely calls for.]
     - **Guardrail Verification:** [Confirm word count adherence. Confirm {{user}}'s reactions are left open-ended with no predictions. Confirm the narrative remains fully in-universe with zero meta-commentary.]
 
-    ## 4. WORLDBUILDING & ECOLOGY
+    ## BACKGROUND AND ATMOSPHERE
     - **NPC & Peripheral Reactions:** [Describe background or secondary character reactions that give them life and independent movement.]
     - **Atmospheric Shift (Tone-Matched):** [Describe how time of day, weather, or ambient lighting is shifting to reflect the passage of time — but scale the intrusion to the scene. During physically intimate or emotionally private moments, keep this to close, sensory, in-the-room details (candlelight, breath, fabric, warmth, the quiet of the room) rather than external world activity (traffic, distant crowds, unrelated background events). Do not introduce mundane real-world noise that breaks immersion or pulls focus away from the two characters in the moment.]
-    - **Lore Anchoring (Context-Gated):** [Default to ACTIVE lore use. Only write "Skipping lore anchoring for this turn" if the scene is physically intimate, sexual, or a private vulnerable moment between characters alone together — not merely "emotional" in a general sense. A tense argument, a battle, a tavern scene, a journey, or grief shared in front of others does NOT qualify for skipping. For every turn that doesn't meet the intimacy bar, select and name one specific element already present in the Lore (a named character, location, faction, custom, or historical event) and weave it into the narration or dialogue. "The lore is already established" is NOT a valid reason to skip — established lore is exactly what should keep getting deepened and referenced, not abandoned. If the supplied Lore is genuinely thin or exhausted for this scene's context, do not skip either: invent ONE small, specific, consistent detail (a minor location, a local custom, a piece of history) that fits the world's existing tone and geography, treat it as canon from this point on, and use it. Never fall back on vague, interchangeable filler ("a nearby town," "an old story") when a named or inventable alternative exists.]""",
+
+    ## LORE ADDITION, MANAGEMENT AND WORLD BUILDING
+    - **Lore Anchoring (Context-Gated):** [Default to ACTIVE lore use. Only write "Skipping lore anchoring for this turn" if the scene is physically intimate, sexual, or a private vulnerable moment between characters alone together — not merely "emotional" in a general sense (A tense argument, a battle, a tavern scene, a journey, or grief shared in front of others does NOT qualify for skipping). For every turn that doesn't meet the intimacy bar, select and name one specific element already present in the Lore (a named character, location, faction, custom, historical event, etc) and weave it into the narration or dialogue. Established lore should keep getting deepened and referenced, not abandoned. If the supplied Lore is genuinely thin or exhausted for this scene's context, do not skip either: invent ONE small, specific, consistent detail (a minor location, a local custom, a piece of history, etc) that fits the world's existing tone and geography, treat it as canon from this point on, and use it. Never fall back on vague, interchangeable filler ("a nearby town," "an old story") when a named or inventable alternative exists.]""",
     )
 
     # Thinking Configuration (Template with dynamic placeholders)
@@ -133,7 +133,12 @@ class Config:
     Remember: Enclose your internal reasoning strictly inside {TAG_THINK_OPEN} and {TAG_THINK_CLOSE} tags. Follow the system instructions for what goes inside that block. Then immediately output your narrative inside {TAG_RESPONSE_OPEN} and {TAG_RESPONSE_CLOSE} tags. No text outside these two blocks.\
     """
     NATIVE_REMINDER = """\
-    CRITICAL: Complete Phase 1 (native thinking) first. Then, for Phase 2, your visible output must start directly with {TAG_THINK_OPEN}—do not skip this block. Follow the system instructions for what goes inside that block. Then close it with {TAG_THINK_CLOSE}, immediately open {TAG_RESPONSE_OPEN}, write your final response, and close with {TAG_RESPONSE_CLOSE}. No preamble, no spillover.\
+    CRITICAL EXECUTION CHECKLIST:
+    1. Complete Phase 1 (native thinking) first, internally.
+    2. Your visible output MUST start directly with {TAG_THINK_OPEN}. Do not skip this block, and do not add preamble.
+    3. Follow the system instructions for what goes inside that block.
+    4. Close it with {TAG_THINK_CLOSE} and immediately open {TAG_RESPONSE_OPEN}.
+    5. Write your final response, and close with {TAG_RESPONSE_CLOSE}. No spillover.\
     """
     # Server Configuration
     SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")

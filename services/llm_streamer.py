@@ -257,27 +257,45 @@ def process_llm_request(json_data, api_key, is_streaming):
                 create_error_response("Invalid or empty message format")
             ), 400
 
+
+        # Model configuration registry (ordered by priority, but order doesn't matter due to distinct patterns)
+        MODEL_REGISTRY = [
+            {"pattern": "gemini-2.5", "sampling_supported": True, "thinking_key": "thinkingBudget"},
+            {"pattern": "gemma-4",    "sampling_supported": True, "thinking_key": "thinkingLevel"},
+        ]
+        
+        def get_model_config(model_name: str) -> dict:
+            """Return config dict for the given model name. Default matches Gemini 3.x behavior."""
+            model_name_lower = model_name.lower()
+            for entry in MODEL_REGISTRY:
+                if entry["pattern"] in model_name_lower:
+                    return entry
+            # Default: treat as Gemini-3-like (strip sampling, use thinkingLevel)
+            return {"sampling_supported": False, "thinking_key": "thinkingLevel"}
+
+        model_config = get_model_config(selected_model)
+        
         generation_config = {
-            "temperature": json_data.get("temperature", Config.TEMPERATURE),
             "maxOutputTokens": json_data.get("max_tokens", Config.MAX_TOKENS),
-            "topP": json_data.get("top_p", Config.TOP_P),
-            "topK": json_data.get("top_k", Config.TOP_K),
+            # "frequencyPenalty": json_data.get("frequency_penalty", Config.FREQUENCY_PENALTY),
+            # "presencePenalty": json_data.get("presence_penalty", Config.PRESENCE_PENALTY)
         }
-
-        selected_model = selected_model.lower()
-
-        # Conditionally inject thinking config based on the model series
-        if "gemini-3" in selected_model or "gemma-4" in selected_model:
-            generation_config["thinkingConfig"] = {
-                "thinkingLevel": Config.THINKING_LEVEL,
-                "includeThoughts": True,
-            }
-        elif "gemini-2.5" in selected_model:
-            generation_config["thinkingConfig"] = {
-                "thinkingBudget": Config.THINKING_BUDGET,
-                "includeThoughts": True,
-            }
-
+        
+        if model_config["sampling_supported"]:
+            generation_config["temperature"] = json_data.get("temperature", Config.TEMPERATURE)
+            generation_config["topP"] = json_data.get("top_p", Config.TOP_P)
+            generation_config["topK"] = json_data.get("top_k", Config.TOP_K)
+        
+        # Map the thinking key to its corresponding Config value
+        THINKING_VALUE_MAP = {
+            "thinkingLevel": Config.THINKING_LEVEL,
+            "thinkingBudget": Config.THINKING_BUDGET,
+        }
+        generation_config["thinkingConfig"] = {
+            model_config["thinking_key"]: THINKING_VALUE_MAP[model_config["thinking_key"]],
+            "includeThoughts": True,
+        }
+        
         google_ai_request = {
             "contents": google_ai_contents,
             "generationConfig": generation_config,

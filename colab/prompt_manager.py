@@ -406,7 +406,7 @@ def render_editor(token):
     thinking_box.add_class("prompt-textarea")
 
     tabs = widgets.Tab(children=[nsfw_box, thinking_box])
-    tabs.set_title(0, "Realism Prompt")
+    tabs.set_title(0, "NSFW Prompt")
     tabs.set_title(1, "Thinking Prompt")
     tabs.add_class("prompt-tabs")
 

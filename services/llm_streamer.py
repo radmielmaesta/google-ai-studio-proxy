@@ -276,7 +276,8 @@ def process_llm_request(json_data, api_key, is_streaming):
         model_config = get_model_config(selected_model)
         
         generation_config = {
-            "maxOutputTokens": json_data.get("max_tokens", Config.MAX_TOKENS),
+            # "maxOutputTokens": json_data.get("max_tokens", Config.MAX_TOKENS),
+            "maxOutputTokens": Config.MAX_TOKENS,
             # "frequencyPenalty": json_data.get("frequency_penalty", Config.FREQUENCY_PENALTY),
             # "presencePenalty": json_data.get("presence_penalty", Config.PRESENCE_PENALTY)
         }

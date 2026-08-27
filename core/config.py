@@ -40,11 +40,11 @@ class Config:
     ENABLE_THINKING = _parse_bool("ENABLE_THINKING", "true")
     DISPLAY_THINKING_IN_COLAB = _parse_bool("DISPLAY_THINKING_IN_COLAB", "true")
     ENABLE_GOOGLE_SEARCH = _parse_bool("ENABLE_GOOGLE_SEARCH", "false")
-    THINKING_LEVEL = os.getenv("THINKING_LEVEL", "medium")
+    THINKING_LEVEL = os.getenv("THINKING_LEVEL", "high")
     THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "-1"))
 
     # NSFW Prefill Configuration
-    NSFW_PREFILL_ = os.getenv('NSFW_PREFILL', """
+    NSFW_PREFILL = os.getenv('NSFW_PREFILL', """
 
         **Genre:** Mature fiction — dark fantasy, drama, action.
         **Tone:** Grounded, visceral, emotionally honest, and emotionally varied.

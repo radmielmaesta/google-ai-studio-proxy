@@ -3,7 +3,9 @@ import time
 from flask import Blueprint, Response, jsonify, request
 
 from core.config import Config
-from services.llm_streamer import create_error_response, process_llm_request
+from services.llm_streamer import _error_handler, process_llm_request
+
+create_error_response = _error_handler.create_error_response
 
 api_bp = Blueprint("api", __name__)
 SERVER_START_TIME = time.time()

@@ -1,3 +1,5 @@
+import sys
+
 import json
 import re
 import time
@@ -8,6 +10,28 @@ from flask import Response, jsonify, stream_with_context
 
 from core.config import Config
 from utils.text_parser import StreamingParser, extract_thinking_and_response
+
+
+# Model configuration registry (ordered by priority, but order doesn't matter due to distinct patterns)
+MODEL_REGISTRY = [
+    {"pattern": "gemini-2.5", "sampling_supported": True, "thinking_key": "thinkingBudget"},
+    {"pattern": "gemma-4",    "sampling_supported": True, "thinking_key": "thinkingLevel"},
+]
+
+MAX_RETRIES = 1
+RETRY_DELAY = 4
+
+# Safe fallback if DEBUG_MODE isn't in your config yet
+debug_mode = getattr(Config, "DEBUG_MODE", True)
+
+def get_model_config(model_name: str) -> dict:
+    """Return config dict for the given model name. Default matches Gemini 3.x behavior."""
+    model_name_lower = model_name.lower()
+    for entry in MODEL_REGISTRY:
+        if entry["pattern"] in model_name_lower:
+            return entry
+    # Default: treat as Gemini-3-like (strip sampling, use thinkingLevel)
+    return {"sampling_supported": False, "thinking_key": "thinkingLevel"}
 
 
 class ErrorHandler:
@@ -36,7 +60,6 @@ class ErrorHandler:
         # Standard OpenAI Error Format for streams
         error_chunk = {"error": {"message": clean_message, "type": "proxy_error"}}
         return f"data: {json.dumps(error_chunk)}\n\n"
-
 
 _error_handler = ErrorHandler()
 
@@ -85,8 +108,82 @@ class _State:
 # Create a single instance of the state (replaces your globals)
 _state = _State()
 
-# --------------------------------
+class ThinkingDisplay:
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+        self._native_open = False
 
+    def _separator(self):
+        print("\n" + "=" * 50)
+
+    def native_stream(self, text):
+        """Print incremental native thinking text. Call repeatedly."""
+        if not self.enabled or not text:
+            return
+        if not self._native_open:
+            self._separator()
+            print("NATIVE THINKING PROCESS:")
+            self._native_open = True
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def close_native_stream(self):
+        """Close the native thinking box when normal content starts."""
+        if self._native_open:
+            print("\n" + "=" * 50 + "\n")
+            self._native_open = False
+
+    def block(self, title, text):
+        """Print a complete thinking block (non‑stream or simulated)."""
+        if not self.enabled or not text:
+            return
+        self._separator()
+        print(title)
+        print(text)
+        self._separator()
+
+def log_raw_stream_chunk(chunk_str):
+    """
+    Print a truncated version of any raw SSE chunk that contains
+    a finishReason or an error. Called before JSON parsing.
+    """
+    if not debug_mode:
+        return
+
+    if "finishReason" in chunk_str or "error" in chunk_str:
+        printed = chunk_str
+        if "thoughtSignature" in printed:
+            printed = re.sub(
+                r'("thoughtSignature":\s*")[^"]+(")',
+                r"\1...[TRUNCATED SIGNATURE]\2",
+                printed,
+            )
+        print(f"\n🚨 RAW GOOGLE API INTERCEPT:\n{printed}\n")
+
+def log_parsed_response(data, is_streaming):
+    if not debug_mode:
+        return
+
+    # Token usage: only for non‑streaming (streaming raw print already contains it)
+    if not is_streaming and "usageMetadata" in data:
+        print("\n📊 TOKEN USAGE:")
+        print(json.dumps(data["usageMetadata"], indent=2))
+
+    # Safety blocks
+    prompt_feedback = data.get("promptFeedback")
+    if prompt_feedback and prompt_feedback.get("blockReason"):
+        print(f"\n🚨 GOOGLE BLOCKED THE PROMPT! Reason: {prompt_feedback['blockReason']}")
+        if "safetyRatings" in prompt_feedback:
+            print(f"🚨 Details: {json.dumps(prompt_feedback['safetyRatings'], indent=2)}")
+
+    # Unusual finish reasons
+    candidates = data.get("candidates")
+    if candidates:
+        reason = candidates[0].get("finishReason")
+        if reason and reason not in ("STOP", None):
+            print(f"\n🚨 GENERATION KILLED! Reason: {reason}")
+            if "safetyRatings" in candidates[0]:
+                print(f"🚨 Safety Trigger: {json.dumps(candidates[0]['safetyRatings'], indent=2)}")
 
 def get_safety_settings(model_name):
     if not model_name:
@@ -98,18 +195,37 @@ def get_safety_settings(model_name):
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
     ]
 
+def create_janitor_chunk(content, model_name, finish_reason=None):
 
-# --- NEW: PURE PIPELINE TRANSFORMATION ---
-def build_gemini_payload(messages, selected_model):
+    return {
+        "id": f"chatcmpl-stream-{int(time.time())}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"content": content},
+                "finish_reason": finish_reason
+                if finish_reason and finish_reason != "STOP"
+                else None,
+            }
+        ],
+    }
+
+def build_gemini_payload(json_data, selected_model):
     """
     Extracts system components for the root instruction, enforces strict
     role alternation, and anchors constraints safely to the final user turn.
     """
+
+    messages = json_data.get("messages", [])
+    
     if not messages or not isinstance(messages, list):
-        return [], None
+        return None
 
     system_instructions = []
-    clean_history = []
+    google_ai_contents = []
 
     # 1. Extract System Context & Flatten History
     for msg in messages:
@@ -125,15 +241,16 @@ def build_gemini_payload(messages, selected_model):
             google_role = "user" if role == "user" else "model"
 
             # Collapse back-to-back duplicate roles
-            if clean_history and clean_history[-1]["role"] == google_role:
-                clean_history[-1]["parts"][0]["text"] += f"\n\n{content}"
+            if google_ai_contents and google_ai_contents[-1]["role"] == google_role:
+                google_ai_contents[-1]["parts"][0]["text"] += f"\n\n{content}"
             else:
-                clean_history.append(
+                google_ai_contents.append(
                     {"role": google_role, "parts": [{"text": content}]}
                 )
 
     is_native_thinking = (
-        "gemini-3" in selected_model
+        "gemini-4" in selected_model
+        or "gemini-3" in selected_model
         or "gemma-4" in selected_model
         or "gemini-2.5" in selected_model
     )
@@ -146,7 +263,8 @@ def build_gemini_payload(messages, selected_model):
         system_instructions.append(f"[Core Instructions]:\n{formatted_prompt}")
 
     system_instruction_text = "\n\n---\n\n".join(system_instructions)
-    system_instruction_payload = (
+    
+    system_instruction = (
         {"role": "system", "parts": [{"text": system_instruction_text}]}
         if system_instruction_text
         else None
@@ -169,11 +287,11 @@ def build_gemini_payload(messages, selected_model):
     # Safely anchor constraints with a fallback for edge cases
     if constraint_text:
         injected = False
-        if clean_history:
+        if google_ai_contents:
             # Try to anchor to the most recent user message
-            for i in range(len(clean_history) - 1, -1, -1):
-                if clean_history[i]["role"] == "user":
-                    clean_history[i]["parts"][0]["text"] += (
+            for i in range(len(google_ai_contents) - 1, -1, -1):
+                if google_ai_contents[i]["role"] == "user":
+                    google_ai_contents[i]["parts"][0]["text"] += (
                         f"\n\n{constraint_text.strip()}"
                     )
                     injected = True
@@ -182,183 +300,168 @@ def build_gemini_payload(messages, selected_model):
         # FALLBACK: If history is empty, or there was NO user message (e.g., swiping a greeting)
         if not injected:
             # Prepend a user turn to hold the rules, keeping the user->model alternation legal
-            clean_history.insert(
+            google_ai_contents.insert(
                 0, {"role": "user", "parts": [{"text": constraint_text.strip()}]}
             )
 
-    return clean_history, system_instruction_payload
+
+    if not google_ai_contents:
+        return None
 
 
-# ------------------------------------------
+    model_config = get_model_config(selected_model)
 
-
-# Restored your Gemma/Gemini compatible transform logic exactly
-def transform_janitor_to_google_ai(messages):
-    if not messages or not isinstance(messages, list):
-        return []
-    google_ai_contents = []
-
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content")
-        if not content or role not in ["user", "assistant", "system"]:
-            continue
-
-        google_role = "user" if role in ["user", "system"] else "model"
-
-        if google_ai_contents and google_ai_contents[-1]["role"] == google_role:
-            google_ai_contents[-1]["parts"][0]["text"] += f"\n\n{content}"
-        else:
-            google_ai_contents.append(
-                {"role": google_role, "parts": [{"text": content}]}
-            )
-
-    if google_ai_contents and google_ai_contents[-1]["role"] == "model":
-        google_ai_contents.pop()
-
-    return google_ai_contents
-
-
-def create_janitor_chunk(content, model_name, finish_reason=None):
-
-    return {
-        "id": f"chatcmpl-stream-{int(time.time())}",
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
-        "model": model_name,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {"content": content},
-                "finish_reason": finish_reason
-                if finish_reason and finish_reason != "STOP"
-                else None,
-            }
-        ],
+    generation_config = {
+        "maxOutputTokens": Config.MAX_TOKENS,
     }
 
-# Model configuration registry (ordered by priority, but order doesn't matter due to distinct patterns)
-MODEL_REGISTRY = [
-    {"pattern": "gemini-2.5", "sampling_supported": True, "thinking_key": "thinkingBudget"},
-    {"pattern": "gemma-4",    "sampling_supported": True, "thinking_key": "thinkingLevel"},
-]
+    if model_config["sampling_supported"]:
+        generation_config["temperature"] = json_data.get("temperature", Config.TEMPERATURE)
+        generation_config["topP"] = json_data.get("top_p", Config.TOP_P)
+        generation_config["topK"] = json_data.get("top_k", Config.TOP_K)
 
-def get_model_config(model_name: str) -> dict:
-    """Return config dict for the given model name. Default matches Gemini 3.x behavior."""
-    model_name_lower = model_name.lower()
-    for entry in MODEL_REGISTRY:
-        if entry["pattern"] in model_name_lower:
-            return entry
-    # Default: treat as Gemini-3-like (strip sampling, use thinkingLevel)
-    return {"sampling_supported": False, "thinking_key": "thinkingLevel"}
+    # Map the thinking key to its corresponding Config value
+    THINKING_VALUE_MAP = {
+        "thinkingLevel": Config.THINKING_LEVEL,
+        "thinkingBudget": Config.THINKING_BUDGET,
+    }
+
+    generation_config["thinkingConfig"] = {
+        model_config["thinking_key"]: THINKING_VALUE_MAP[model_config["thinking_key"]],
+        "includeThoughts": True,
+    }
+
+    google_ai_request = {
+        "contents": google_ai_contents,
+        "generationConfig": generation_config,
+        "safetySettings": get_safety_settings(selected_model),
+    }
+
+    if system_instruction:
+        google_ai_request["systemInstruction"] = system_instruction
+
+    if getattr(Config, "ENABLE_GOOGLE_SEARCH", False):
+        google_ai_request["tools"] = [{"googleSearch": {}}]
 
 
-def generate_stream(selected_model, url, google_ai_request, headers, debug_mode):
-    max_retries = 1
-    retry_delay = 4
+    return google_ai_request
 
-    parser = StreamingParser(
-        getattr(Config, "DISPLAY_THINKING_IN_COLAB", True)
-    )
+def _extract_google_error(response, debug_mode):
+    """Extract a clean error message from a non-200 Google response."""
+    if debug_mode:
+        print("\n🚨 GOOGLE API ERROR BODY 🚨")
+        print(response.text + "\n")
+    clean_error_msg = f"HTTP {response.status_code} Error"
+    try:
+        error_data = response.json()
+        if "error" in error_data and "message" in error_data["error"]:
+            clean_error_msg = f"{response.status_code}: {error_data['error']['message']}"
+    except Exception:
+        pass
+    return clean_error_msg
+
+def _post_with_retry(url, headers, payload, stream, debug_mode):
+    """Make HTTP POST with retry. Returns a Response or raises."""
     response = None
-
-    # Initial Connection Retries
-    for attempt in range(1, max_retries + 1):
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
             if debug_mode:
-                print(
-                    f"Connecting to Google AI for streaming (Attempt {attempt}/{max_retries})..."
-                )
+                print(f"Connecting to Google AI (Attempt {attempt}/{MAX_RETRIES})...")
 
             response = _state.http_session.post(
                 url,
-                json=google_ai_request,
+                json=payload,
                 headers=headers,
-                stream=True,
+                stream=stream,
                 timeout=Config.REQUEST_TIMEOUT_SECONDS,
             )
 
             if debug_mode:
-                print(
-                    f"Google AI stream response status: {response.status_code}"
-                )
+                print(f"Google AI response status: {response.status_code}")
 
+            # Retryable server errors
             if response.status_code in [500, 502, 503, 504]:
                 _state.record_server_error(response.status_code, attempt)
-                if attempt < max_retries:
-                    time.sleep(retry_delay * attempt)
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_DELAY * attempt)
                     continue
+                # If last attempt, fall through to non-200 handling
+                # (no double counting because we already recorded above)
 
-            # If it's a 4xx error or other bad status, intercept the JSON
+            # Any non-200 error
             if response.status_code != 200:
-                print("\n🚨 GOOGLE API ERROR BODY 🚨")
-                print(response.text)
-
-                clean_error_msg = f"HTTP {response.status_code} Error"
-                try:
-                    # Extract the rich Google error message
-                    error_data = response.json()
-                    if (
-                        "error" in error_data
-                        and "message" in error_data["error"]
-                    ):
-                        clean_error_msg = f"{response.status_code}: {error_data['error']['message']}"
-                except Exception:
-                    pass
-
-                # Raise a generic exception. This prevents the requests library
-                # from leaking the URL (and API key) into the error string.
+                clean_error_msg = _extract_google_error(response, debug_mode)
                 raise Exception(clean_error_msg)
 
+            # Success
             _state.record_success()
-            break
+            return response
 
-        except (requests.RequestException, Exception) as e:
-            _state.record_server_error(500, attempt)
-            if attempt == max_retries:
-                yield _error_handler.create_error_stream_chunk(
-                    f"Proxy Connection failed after {max_retries} attempts: {str(e)}"
-                )
-                yield "data: [DONE]\n\n"
-                return
-            time.sleep(retry_delay * attempt)
+        except Exception as e:
+            # If the exception was raised by our own code (HTTP error), we already recorded.
+            # Only record here for network-level exceptions or other unexpected errors.
+            if response is None or response.status_code not in [500, 502, 503, 504]:
+                _state.record_server_error(500, attempt)  # network/unexpected
 
-    if not response:
-        yield _error_handler.create_error_stream_chunk(
-            "Failed to establish connection to Google AI."
-        )
+            if attempt == MAX_RETRIES:
+                raise Exception(f"Proxy connection failed after {MAX_RETRIES} attempts: {str(e)}")
+            time.sleep(RETRY_DELAY * attempt)
+
+    # This line is now truly unreachable, but kept as a safety net (or remove it)
+    raise Exception("Failed to establish connection to Google AI.")
+
+def _extract_parts(candidate):
+    """Return (native_thinking_text, visible_content_text) from a candidate."""
+    native_thinking_text = ""
+    visible_content_text = ""
+    if "content" in candidate and "parts" in candidate["content"]:
+        for part in candidate["content"]["parts"]:
+            if "text" in part:
+                if part.get("thought"):
+                    native_thinking_text += part["text"]
+                else:
+                    visible_content_text += part["text"]
+    return native_thinking_text, visible_content_text
+
+def generate_stream(selected_model, url, google_ai_request, headers, debug_mode):
+    
+
+    parser = StreamingParser(
+        getattr(Config, "DISPLAY_THINKING_IN_COLAB", True)
+    )
+
+    display = ThinkingDisplay(debug_mode and getattr(Config, "DISPLAY_THINKING_IN_COLAB", True))
+    
+    # Establish connection with retries
+    try:
+        response = _post_with_retry(url, headers, google_ai_request, True, debug_mode)
+    except Exception as e:
+        yield _error_handler.create_error_stream_chunk(str(e))
         yield "data: [DONE]\n\n"
         return
 
     # Process Stream
     try:
+        
         has_sent_data = False
         last_keepalive = time.time()  # <-- NEW: Track the heartbeat timer
-        is_printing_thoughts = False  # Tracks if our decoration box is open
 
         for chunk in response.iter_lines():
+            
             if not chunk:
                 continue
+                
             chunk_str = chunk.decode("utf-8")
 
             # --- AGGRESSIVE ERROR CATCHER ---
-            if debug_mode and (
-                "finishReason" in chunk_str or "error" in chunk_str
-            ):
-                # Clean up the massive signatures without reloading modules
-                printed_chunk = chunk_str
-                if "thoughtSignature" in printed_chunk:
-                    printed_chunk = re.sub(
-                        r'("thoughtSignature":\s*")[^"]+(")',
-                        r"\1...[TRUNCATED SIGNATURE]\2",
-                        printed_chunk,
-                    )
-                print(f"\n🚨 RAW GOOGLE API INTERCEPT:\n{printed_chunk}\n")
+            log_raw_stream_chunk(chunk_str)
             # --------------------------------
 
             if not chunk_str.startswith("data: "):
                 continue
+            
             data_str = chunk_str[len("data: ") :].strip()
+            
             if data_str == "[DONE]":
                 if debug_mode:
                     print("Stream finished ([DONE] received).")
@@ -366,34 +469,11 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                 break
 
             try:
+                
                 data = json.loads(data_str)
+                
                 # --- DIAGNOSTIC ERROR REPORTING ---
-                if debug_mode:
-                    if "promptFeedback" in data and data[
-                        "promptFeedback"
-                    ].get("blockReason"):
-
-                        print(
-                            f"\n🚨 GOOGLE BLOCKED THE PROMPT! Reason: {data['promptFeedback']['blockReason']}"
-                        )
-
-                        if "safetyRatings" in data["promptFeedback"]:
-                            print(
-                                f"🚨 Details: {json.dumps(data['promptFeedback']['safetyRatings'])}"
-                            )
-
-                    if "candidates" in data and data["candidates"]:
-                        cand = data["candidates"][0]
-                        reason = cand.get("finishReason")
-
-                        if reason and reason not in ["STOP", None]:
-                            print(
-                                f"\n🚨 GENERATION KILLED! Reason: {reason}"
-                            )
-                            if "safetyRatings" in cand:
-                                print(
-                                    f"🚨 Safety Trigger: {json.dumps(cand['safetyRatings'])}"
-                                )
+                log_parsed_response(data, is_streaming=True)
                 # ----------------------------------
 
                 if "error" in data:
@@ -410,6 +490,7 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                 content_delta = ""
                 thought_delta = ""
                 finish_reason = None
+                
                 if "candidates" in data and data["candidates"]:
                     candidate = data["candidates"][0]
                     if (
@@ -424,50 +505,27 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                                     content_delta += part["text"]
                     finish_reason = candidate.get("finishReason")
 
-                if debug_mode and getattr(
-                    Config, "DISPLAY_THINKING_IN_COLAB", True
-                ):
-                    import sys
 
-                    # 1. If we have thoughts to print
+                if debug_mode and getattr(Config, "DISPLAY_THINKING_IN_COLAB", True):
+                    
                     if thought_delta:
-                        # Open the box if it isn't open yet
-                        if not is_printing_thoughts:
-                            print("\n" + "=" * 50)
-                            print("NATIVE THINKING PROCESS:")
-                            is_printing_thoughts = True
-
-                        # Stream the word smoothly
-                        sys.stdout.write(thought_delta)
-                        sys.stdout.flush()
-
-                    # 2. If thoughts stopped and standard content starts
-                    elif content_delta and is_printing_thoughts:
-                        # Close the box!
-                        print("\n" + "=" * 50 + "\n")
-                        is_printing_thoughts = False
+                        display.native_stream(thought_delta)
+                    elif content_delta:
+                        display.close_native_stream()
 
                 if not content_delta and not finish_reason:
                     continue
 
                 if Config.ENABLE_THINKING:
+                    
                     content_to_send, thinking_for_colab, is_complete = (
                         parser.process_chunk(content_delta)
                     )
-                    if (
-                        debug_mode
-                        and thinking_for_colab
-                        and getattr(
-                            Config, "DISPLAY_THINKING_IN_COLAB", True
-                        )
-                    ):
-                        # Print to colab silently without breaking the stream
-                        print("\n" + "=" * 50)
-                        print("SIMULATED THINKING PROCESS:")
-                        print(thinking_for_colab)
-                        print("=" * 50)
-                        pass
 
+                    if thinking_for_colab:
+                        display.block("SIMULATED THINKING PROCESS:", thinking_for_colab)
+
+                    
                     # The stream is ending (Google sent a finishReason)
                     # but the parser never saw a full, well-formed set
                     # of tags -- e.g. an unbounded preamble before
@@ -475,22 +533,17 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                     # model that skipped the tags entirely. Fall back
                     # to the same lenient logic the non-streaming path
                     # already uses instead of leaking or losing the turn.
+                    
                     if finish_reason and not is_complete:
                         finalize_text, finalize_thinking, _ = (
                             parser.finalize()
                         )
-                        if (
-                            debug_mode
-                            and finalize_thinking
-                            and getattr(
-                                Config, "DISPLAY_THINKING_IN_COLAB", True
-                            )
-                        ):
-                            print("\n" + "=" * 50)
-                            print("SIMULATED THINKING PROCESS (finalize):")
-                            print(finalize_thinking)
-                            print("=" * 50)
+                        
+                        if finalize_thinking:
+                            display.block("SIMULATED THINKING PROCESS (finalize):", finalize_thinking)
+                            
                         content_to_send = (content_to_send or "") + finalize_text
+
                 else:
                     content_to_send = content_delta
 
@@ -503,6 +556,7 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                     if time.time() - last_keepalive > 2:
                         yield ": heartbeat\n\n"
                         last_keepalive = time.time()
+
 
             except json.JSONDecodeError as json_err:
                 if debug_mode:
@@ -517,24 +571,123 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
             yield "data: [DONE]\n\n"
 
     except Exception as e:
+        
         print(f"Error during streaming: {e}")
         traceback.print_exc()
         yield _error_handler.create_error_stream_chunk(
             f"Error during streaming parsing: {e}"
         )
         yield "data: [DONE]\n\n"
+        
     finally:
         if response:
             response.close()
 
+def generate_non_stream(selected_model, url, google_ai_request, headers, debug_mode):
+    
+    if debug_mode:
+        print("Sending request to Google AI (non-streaming)...")
+
+    display = ThinkingDisplay(getattr(Config, "DISPLAY_THINKING_IN_COLAB", True))
+        
+    try:
+        response = _post_with_retry(url, headers, google_ai_request, False, debug_mode)
+    except Exception as e:
+        return jsonify(_error_handler.create_error_response(str(e))), 500
+            
+    try:
+        google_response = response.json()
+    except json.JSONDecodeError:
+        return jsonify(
+            _error_handler.create_error_response(
+                "Google AI returned an invalid, non-JSON response."
+            )
+        ), 502
+
+    # --- NEW: NON-STREAMING DIAGNOSTICS & USAGE METADATA ---
+    log_parsed_response(google_response, is_streaming=False)
+    # -------------------------------------------------------
+
+    # Non-streaming autopsy builder
+    if not google_response.get("candidates") or not google_response["candidates"][0].get("content"):
+        
+        finish_reason = google_response.get("candidates", [{}])[0].get(
+            "finishReason", "UNKNOWN"
+        )
+        
+        prompt_feedback = google_response.get("promptFeedback")
+        filter_msg = "No content received from Google AI."
+        
+        if finish_reason != "STOP":
+            filter_msg += f" Finish Reason: {finish_reason}."
+            
+        if prompt_feedback and prompt_feedback.get("blockReason"):
+            filter_msg += f" Block Reason: {prompt_feedback['blockReason']}."
+            details = prompt_feedback.get("safetyRatings")
+            if details:
+                filter_msg += f" Details: {json.dumps(details)}"
+
+        print(f"Warning: {filter_msg}")
+        return jsonify(_error_handler.create_error_response(filter_msg)), 200
+
+    candidate = google_response["candidates"][0]
+    native_thinking_text = ""
+    visible_content_text = ""
+
+    # --- SEPARATE NATIVE THOUGHTS FROM VISIBLE CONTENT ---
+    if "content" in candidate and "parts" in candidate["content"]:
+        
+        for part in candidate["content"]["parts"]:
+            if "text" in part:
+                if part.get("thought"):
+                    native_thinking_text += part["text"]
+                else:
+                    visible_content_text += part["text"]
+
+
+
+    # Print Native Thoughts to terminal console
+    if native_thinking_text:
+        display.block("NATIVE THINKING PROCESS (NON‑STREAMING):", native_thinking_text.strip())
+
+    content = visible_content_text
+
+    # --- NEW: Parse out thoughts for non-streaming mode ---
+    if getattr(Config, "ENABLE_THINKING", False):
+        
+        thinking_content, parsed_response, _ = extract_thinking_and_response(content)
+
+        # Print thoughts to colab console if enabled
+        if thinking_content:
+            display.block("SIMULATED THINKING PROCESS (NON‑STREAMING):", thinking_content)
+
+        # Only send the cleaned response to Janitor
+        if parsed_response:
+            content = parsed_response
+    # ------------------------------------------------------
+
+    janitor_response = {
+        "id": f"chatcmpl-{int(time.time())}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": selected_model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": candidate.get("finishReason", "stop"),
+            }
+        ],
+    }
+    
+    return jsonify(janitor_response)
+
 def process_llm_request(json_data, api_key, is_streaming):
-    # Safe fallback if DEBUG_MODE isn't in your config yet
-    debug_mode = getattr(Config, "DEBUG_MODE", True)
 
     try:
-        request_time = time.strftime("%Y-%m-%d %H:%M:%S")
 
         if debug_mode:
+            request_time = time.strftime("%Y-%m-%d %H:%M:%S")
             print(f"\n[{request_time}] Received request")
 
         selected_model = (
@@ -546,56 +699,17 @@ def process_llm_request(json_data, api_key, is_streaming):
         if debug_mode:
             print(f"Using model: {selected_model}")
 
-        # --- APPLY THE NEW PIPELINE HERE ---
-        # The old list mutation prefill logic has been deleted.
-        google_ai_contents, system_instruction = build_gemini_payload(
-            json_data.get("messages", []), selected_model
+        
+        google_ai_request = build_gemini_payload(
+            json_data, selected_model
         )
-        # -----------------------------------
 
-        if not google_ai_contents:
+        if google_ai_request is None:
             print("Error: Invalid or empty message format received.")
             return jsonify(
                 _error_handler.create_error_response("Invalid or empty message format")
             ), 400
-
-
-        model_config = get_model_config(selected_model)
-
-        generation_config = {
-            # "maxOutputTokens": json_data.get("max_tokens", Config.MAX_TOKENS),
-            "maxOutputTokens": Config.MAX_TOKENS,
-            # "frequencyPenalty": json_data.get("frequency_penalty", Config.FREQUENCY_PENALTY),
-            # "presencePenalty": json_data.get("presence_penalty", Config.PRESENCE_PENALTY)
-        }
-
-        if model_config["sampling_supported"]:
-            generation_config["temperature"] = json_data.get("temperature", Config.TEMPERATURE)
-            generation_config["topP"] = json_data.get("top_p", Config.TOP_P)
-            generation_config["topK"] = json_data.get("top_k", Config.TOP_K)
-
-        # Map the thinking key to its corresponding Config value
-        THINKING_VALUE_MAP = {
-            "thinkingLevel": Config.THINKING_LEVEL,
-            "thinkingBudget": Config.THINKING_BUDGET,
-        }
-
-        generation_config["thinkingConfig"] = {
-            model_config["thinking_key"]: THINKING_VALUE_MAP[model_config["thinking_key"]],
-            "includeThoughts": True,
-        }
-
-        google_ai_request = {
-            "contents": google_ai_contents,
-            "generationConfig": generation_config,
-            "safetySettings": get_safety_settings(selected_model),
-        }
-
-        if system_instruction:
-            google_ai_request["systemInstruction"] = system_instruction
-
-        if getattr(Config, "ENABLE_GOOGLE_SEARCH", False):
-            google_ai_request["tools"] = [{"googleSearch": {}}]
+        
 
         # --- DIAGNOSTIC PAYLOAD LOGGING ---
         if debug_mode:
@@ -635,6 +749,9 @@ def process_llm_request(json_data, api_key, is_streaming):
         headers = {"Content-Type": "application/json"}
 
 
+        #---------------------------------------------
+        # True Processing Starts Over Here 
+        #---------------------------------------------
 
         # 3. Handle Streaming
         if is_streaming:
@@ -650,193 +767,14 @@ def process_llm_request(json_data, api_key, is_streaming):
                 },
             )
 
-
         # 4. Handle Non-Streaming
         else:
-            if debug_mode:
-                print("Sending request to Google AI (non-streaming)...")
-            response = None
 
-            for attempt in range(1, max_retries + 1):
-                try:
-                    response = _state.http_session.post(
-                        url,
-                        json=google_ai_request,
-                        headers=headers,
-                        timeout=Config.REQUEST_TIMEOUT_SECONDS,
-                    )
-                    if debug_mode:
-                        print(
-                            f"Google AI non-stream response status: {response.status_code}"
-                        )
+            return generate_non_stream(selected_model, url, google_ai_request, headers, debug_mode)
 
-                    if response.status_code in [500, 502, 503, 504]:
-                        _state.record_server_error(response.status_code, attempt)
-                        if attempt < max_retries:
-                            time.sleep(retry_delay * attempt)
-                            continue
-
-                    # Intercept non-streaming errors to prevent URL leaks
-                    if response.status_code != 200:
-                        if debug_mode:
-                            print("\n🚨 GOOGLE API ERROR BODY 🚨")
-                            print(response.text + "\n")
-                        clean_error_msg = f"HTTP {response.status_code} Error"
-                        try:
-                            error_data = response.json()
-                            if (
-                                "error" in error_data
-                                and "message" in error_data["error"]
-                            ):
-                                clean_error_msg = f"{response.status_code}: {error_data['error']['message']}"
-                        except Exception:
-                            pass
-                        raise Exception(clean_error_msg)
-
-                    _state.record_success()
-                    break
-
-                except Exception as e:
-                    # Dynamically grab the real status code if it exists, otherwise default to 500
-                    actual_status = (
-                        response.status_code if (response is not None) else 500
-                    )
-                    _state.record_server_error(actual_status, attempt)
-
-                    if attempt == max_retries:
-                        return jsonify(
-                            _error_handler.create_error_response(
-                                f"Google AI non-stream request failed: {str(e)}"
-                            )
-                        ), actual_status if actual_status >= 400 else 500
-                    time.sleep(retry_delay * attempt)
-
-            if not response:
-                return jsonify(
-                    _error_handler.create_error_response(
-                        "Failed to establish connection to Google AI."
-                    )
-                ), 500
-
-            try:
-                google_response = response.json()
-            except json.JSONDecodeError:
-                return jsonify(
-                    _error_handler.create_error_response(
-                        "Google AI returned an invalid, non-JSON response."
-                    )
-                ), 502
-
-            # --- NEW: NON-STREAMING DIAGNOSTICS & USAGE METADATA ---
-            if debug_mode:
-                usage = google_response.get("usageMetadata")
-                if usage:
-                    print("\n📊 TOKEN USAGE (NON-STREAMING):")
-                    print(json.dumps(usage, indent=2))
-
-                # Check for safety blocks and unusual finish reasons
-                prompt_feedback = google_response.get("promptFeedback")
-                if prompt_feedback and prompt_feedback.get("blockReason"):
-                    print(
-                        f"\n🚨 GOOGLE BLOCKED THE PROMPT! Reason: {prompt_feedback['blockReason']}"
-                    )
-                    if "safetyRatings" in prompt_feedback:
-                        print(
-                            f"🚨 Details: {json.dumps(prompt_feedback['safetyRatings'], indent=2)}"
-                        )
-
-                if google_response.get("candidates"):
-                    cand = google_response["candidates"][0]
-                    reason = cand.get("finishReason")
-                    if reason and reason not in ["STOP", None]:
-                        print(f"\n🚨 GENERATION KILLED! Reason: {reason}")
-                        if "safetyRatings" in cand:
-                            print(
-                                f"🚨 Safety Trigger: {json.dumps(cand['safetyRatings'], indent=2)}"
-                            )
-            # -------------------------------------------------------
-
-            # Non-streaming autopsy builder
-            if not google_response.get("candidates") or not google_response[
-                "candidates"
-            ][0].get("content"):
-                finish_reason = google_response.get("candidates", [{}])[0].get(
-                    "finishReason", "UNKNOWN"
-                )
-                prompt_feedback = google_response.get("promptFeedback")
-                filter_msg = "No content received from Google AI."
-                if finish_reason != "STOP":
-                    filter_msg += f" Finish Reason: {finish_reason}."
-                if prompt_feedback and prompt_feedback.get("blockReason"):
-                    filter_msg += f" Block Reason: {prompt_feedback['blockReason']}."
-                    details = prompt_feedback.get("safetyRatings")
-                    if details:
-                        filter_msg += f" Details: {json.dumps(details)}"
-
-                print(f"Warning: {filter_msg}")
-                return jsonify(_error_handler.create_error_response(filter_msg)), 200
-
-            candidate = google_response["candidates"][0]
-            native_thinking_text = ""
-            visible_content_text = ""
-
-            # --- SEPARATE NATIVE THOUGHTS FROM VISIBLE CONTENT ---
-            if "content" in candidate and "parts" in candidate["content"]:
-                for part in candidate["content"]["parts"]:
-                    if "text" in part:
-                        if part.get("thought"):
-                            native_thinking_text += part["text"]
-                        else:
-                            visible_content_text += part["text"]
-
-
-            # Print Native Thoughts to terminal console
-            if native_thinking_text and getattr(
-                Config, "DISPLAY_THINKING_IN_COLAB", True
-            ):
-                print("\n" + "=" * 50)
-                print("NATIVE THINKING PROCESS (NON-STREAMING):")
-                print(native_thinking_text.strip())
-                print("=" * 50 + "\n")
-
-            content = visible_content_text
-
-            # --- NEW: Parse out thoughts for non-streaming mode ---
-            if getattr(Config, "ENABLE_THINKING", False):
-                thinking_content, parsed_response, _ = extract_thinking_and_response(
-                    content
-                )
-
-                # Print thoughts to colab console if enabled
-                if thinking_content and getattr(
-                    Config, "DISPLAY_THINKING_IN_COLAB", True
-                ):
-                    print("\n" + "=" * 50)
-                    print("SIMULATED THINKING PROCESS (NON-STREAMING):")
-                    print(thinking_content)
-                    print("=" * 50 + "\n")
-
-                # Only send the cleaned response to Janitor
-                if parsed_response:
-                    content = parsed_response
-            # ------------------------------------------------------
-
-            janitor_response = {
-                "id": f"chatcmpl-{int(time.time())}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": selected_model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": content},
-                        "finish_reason": candidate.get("finishReason", "stop"),
-                    }
-                ],
-            }
-            return jsonify(janitor_response)
 
     except Exception as e:
+        
         print(f"Unexpected error in proxy handler: {str(e)}")
         traceback.print_exc()
         return jsonify(_error_handler.create_error_response(f"Proxy Internal Error: {str(e)}")), 500

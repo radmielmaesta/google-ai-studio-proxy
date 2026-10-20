@@ -195,23 +195,15 @@ def get_safety_settings(model_name):
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
     ]
 
-def create_janitor_chunk(content, model_name, finish_reason=None):
-
+def build_janitor_response(object_type, id_prefix, model_name, choice):
+    now = int(time.time())
     return {
-        "id": f"chatcmpl-stream-{int(time.time())}",
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
+        "id": f"{id_prefix}{now}",
+        "object": object_type,
+        "created": now,
         "model": model_name,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {"content": content},
-                "finish_reason": finish_reason
-                if finish_reason and finish_reason != "STOP"
-                else None,
-            }
-        ],
-    }
+        "choices": [{"index": 0, **choice}],
+}
 
 def build_gemini_payload(json_data, selected_model):
     """
@@ -220,7 +212,7 @@ def build_gemini_payload(json_data, selected_model):
     """
 
     messages = json_data.get("messages", [])
-    
+
     if not messages or not isinstance(messages, list):
         return None
 
@@ -263,7 +255,7 @@ def build_gemini_payload(json_data, selected_model):
         system_instructions.append(f"[Core Instructions]:\n{formatted_prompt}")
 
     system_instruction_text = "\n\n---\n\n".join(system_instructions)
-    
+
     system_instruction = (
         {"role": "system", "parts": [{"text": system_instruction_text}]}
         if system_instruction_text
@@ -423,15 +415,31 @@ def _extract_parts(candidate):
                     visible_content_text += part["text"]
     return native_thinking_text, visible_content_text
 
+
+def build_block_message(data):
+    candidates = data.get("candidates") or [{}]
+    finish_reason = candidates[0].get("finishReason")
+    prompt_feedback = data.get("promptFeedback") or {}
+    msg = "No content received from Google AI."
+    if finish_reason and finish_reason != "STOP":
+        msg += f" Finish Reason: {finish_reason}."
+    if prompt_feedback.get("blockReason"):
+        msg += f" Block Reason: {prompt_feedback['blockReason']}."
+        details = prompt_feedback.get("safetyRatings")
+        if details:
+            msg += f" Details: {json.dumps(details)}"
+    return msg
+
+
 def generate_stream(selected_model, url, google_ai_request, headers, debug_mode):
-    
+
 
     parser = StreamingParser(
         getattr(Config, "DISPLAY_THINKING_IN_COLAB", True)
     )
 
     display = ThinkingDisplay(debug_mode and getattr(Config, "DISPLAY_THINKING_IN_COLAB", True))
-    
+
     # Establish connection with retries
     try:
         response = _post_with_retry(url, headers, google_ai_request, True, debug_mode)
@@ -442,15 +450,15 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
 
     # Process Stream
     try:
-        
+
         has_sent_data = False
         last_keepalive = time.time()  # <-- NEW: Track the heartbeat timer
 
         for chunk in response.iter_lines():
-            
+
             if not chunk:
                 continue
-                
+
             chunk_str = chunk.decode("utf-8")
 
             # --- AGGRESSIVE ERROR CATCHER ---
@@ -459,9 +467,9 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
 
             if not chunk_str.startswith("data: "):
                 continue
-            
+
             data_str = chunk_str[len("data: ") :].strip()
-            
+
             if data_str == "[DONE]":
                 if debug_mode:
                     print("Stream finished ([DONE] received).")
@@ -469,9 +477,9 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                 break
 
             try:
-                
+
                 data = json.loads(data_str)
-                
+
                 # --- DIAGNOSTIC ERROR REPORTING ---
                 log_parsed_response(data, is_streaming=True)
                 # ----------------------------------
@@ -487,27 +495,12 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                     yield "data: [DONE]\n\n"
                     return
 
-                content_delta = ""
-                thought_delta = ""
-                finish_reason = None
-                
-                if "candidates" in data and data["candidates"]:
-                    candidate = data["candidates"][0]
-                    if (
-                        "content" in candidate
-                        and "parts" in candidate["content"]
-                    ):
-                        for part in candidate["content"]["parts"]:
-                            if "text" in part:
-                                if part.get("thought"):
-                                    thought_delta += part["text"]
-                                else:
-                                    content_delta += part["text"]
-                    finish_reason = candidate.get("finishReason")
-
+                candidate = (data.get("candidates") or [{}])[0]
+                thought_delta, content_delta = _extract_parts(candidate)
+                finish_reason = candidate.get("finishReason")
 
                 if debug_mode and getattr(Config, "DISPLAY_THINKING_IN_COLAB", True):
-                    
+
                     if thought_delta:
                         display.native_stream(thought_delta)
                     elif content_delta:
@@ -517,7 +510,7 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                     continue
 
                 if Config.ENABLE_THINKING:
-                    
+
                     content_to_send, thinking_for_colab, is_complete = (
                         parser.process_chunk(content_delta)
                     )
@@ -525,7 +518,7 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                     if thinking_for_colab:
                         display.block("SIMULATED THINKING PROCESS:", thinking_for_colab)
 
-                    
+
                     # The stream is ending (Google sent a finishReason)
                     # but the parser never saw a full, well-formed set
                     # of tags -- e.g. an unbounded preamble before
@@ -533,15 +526,15 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
                     # model that skipped the tags entirely. Fall back
                     # to the same lenient logic the non-streaming path
                     # already uses instead of leaking or losing the turn.
-                    
+
                     if finish_reason and not is_complete:
                         finalize_text, finalize_thinking, _ = (
                             parser.finalize()
                         )
-                        
+
                         if finalize_thinking:
                             display.block("SIMULATED THINKING PROCESS (finalize):", finalize_thinking)
-                            
+
                         content_to_send = (content_to_send or "") + finalize_text
 
                 else:
@@ -549,7 +542,12 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
 
                 if content_to_send:
                     has_sent_data = True
-                    yield f"data: {json.dumps(create_janitor_chunk(content_to_send, selected_model, finish_reason))}\n\n"
+                    choice = {
+                        "delta": {"content": content_to_send},
+                        "finish_reason": finish_reason if finish_reason and finish_reason != "STOP" else None,
+                    }
+                    chunk = build_janitor_response("chat.completion.chunk", "chatcmpl-stream-", selected_model, choice)
+                    yield f"data: {json.dumps(chunk)}\n\n"
                 else:
                     # --- THE HEARTBEAT FIX ---
                     # We are buffering thought tags. Send an invisible pulse every 2 seconds to keep JanitorAI alive.
@@ -571,30 +569,30 @@ def generate_stream(selected_model, url, google_ai_request, headers, debug_mode)
             yield "data: [DONE]\n\n"
 
     except Exception as e:
-        
+
         print(f"Error during streaming: {e}")
         traceback.print_exc()
         yield _error_handler.create_error_stream_chunk(
             f"Error during streaming parsing: {e}"
         )
         yield "data: [DONE]\n\n"
-        
+
     finally:
         if response:
             response.close()
 
 def generate_non_stream(selected_model, url, google_ai_request, headers, debug_mode):
-    
+
     if debug_mode:
         print("Sending request to Google AI (non-streaming)...")
 
     display = ThinkingDisplay(getattr(Config, "DISPLAY_THINKING_IN_COLAB", True))
-        
+
     try:
         response = _post_with_retry(url, headers, google_ai_request, False, debug_mode)
     except Exception as e:
         return jsonify(_error_handler.create_error_response(str(e))), 500
-            
+
     try:
         google_response = response.json()
     except json.JSONDecodeError:
@@ -609,41 +607,14 @@ def generate_non_stream(selected_model, url, google_ai_request, headers, debug_m
     # -------------------------------------------------------
 
     # Non-streaming autopsy builder
-    if not google_response.get("candidates") or not google_response["candidates"][0].get("content"):
-        
-        finish_reason = google_response.get("candidates", [{}])[0].get(
-            "finishReason", "UNKNOWN"
-        )
-        
-        prompt_feedback = google_response.get("promptFeedback")
-        filter_msg = "No content received from Google AI."
-        
-        if finish_reason != "STOP":
-            filter_msg += f" Finish Reason: {finish_reason}."
-            
-        if prompt_feedback and prompt_feedback.get("blockReason"):
-            filter_msg += f" Block Reason: {prompt_feedback['blockReason']}."
-            details = prompt_feedback.get("safetyRatings")
-            if details:
-                filter_msg += f" Details: {json.dumps(details)}"
-
+    candidates = google_response.get("candidates")
+    if not candidates or not candidates[0].get("content"):
+        filter_msg = build_block_message(google_response)
         print(f"Warning: {filter_msg}")
         return jsonify(_error_handler.create_error_response(filter_msg)), 200
 
-    candidate = google_response["candidates"][0]
-    native_thinking_text = ""
-    visible_content_text = ""
-
-    # --- SEPARATE NATIVE THOUGHTS FROM VISIBLE CONTENT ---
-    if "content" in candidate and "parts" in candidate["content"]:
-        
-        for part in candidate["content"]["parts"]:
-            if "text" in part:
-                if part.get("thought"):
-                    native_thinking_text += part["text"]
-                else:
-                    visible_content_text += part["text"]
-
+    candidate = candidates[0]
+    native_thinking_text, visible_content_text = _extract_parts(candidate)
 
 
     # Print Native Thoughts to terminal console
@@ -654,7 +625,7 @@ def generate_non_stream(selected_model, url, google_ai_request, headers, debug_m
 
     # --- NEW: Parse out thoughts for non-streaming mode ---
     if getattr(Config, "ENABLE_THINKING", False):
-        
+
         thinking_content, parsed_response, _ = extract_thinking_and_response(content)
 
         # Print thoughts to colab console if enabled
@@ -666,21 +637,12 @@ def generate_non_stream(selected_model, url, google_ai_request, headers, debug_m
             content = parsed_response
     # ------------------------------------------------------
 
-    janitor_response = {
-        "id": f"chatcmpl-{int(time.time())}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": selected_model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": candidate.get("finishReason", "stop"),
-            }
-        ],
+    choice = {
+        "message": {"role": "assistant", "content": content},
+        "finish_reason": candidate.get("finishReason", "stop"),
     }
-    
-    return jsonify(janitor_response)
+    response_body = build_janitor_response("chat.completion", "chatcmpl-", selected_model, choice)
+    return jsonify(response_body)
 
 def process_llm_request(json_data, api_key, is_streaming):
 
@@ -699,7 +661,7 @@ def process_llm_request(json_data, api_key, is_streaming):
         if debug_mode:
             print(f"Using model: {selected_model}")
 
-        
+
         google_ai_request = build_gemini_payload(
             json_data, selected_model
         )
@@ -709,7 +671,7 @@ def process_llm_request(json_data, api_key, is_streaming):
             return jsonify(
                 _error_handler.create_error_response("Invalid or empty message format")
             ), 400
-        
+
 
         # --- DIAGNOSTIC PAYLOAD LOGGING ---
         if debug_mode:
@@ -750,7 +712,7 @@ def process_llm_request(json_data, api_key, is_streaming):
 
 
         #---------------------------------------------
-        # True Processing Starts Over Here 
+        # True Processing Starts Over Here
         #---------------------------------------------
 
         # 3. Handle Streaming
@@ -774,7 +736,7 @@ def process_llm_request(json_data, api_key, is_streaming):
 
 
     except Exception as e:
-        
+
         print(f"Unexpected error in proxy handler: {str(e)}")
         traceback.print_exc()
         return jsonify(_error_handler.create_error_response(f"Proxy Internal Error: {str(e)}")), 500
